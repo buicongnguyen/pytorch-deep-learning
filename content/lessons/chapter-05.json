@@ -1,0 +1,219 @@
+{
+  "chapter": 5,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 140,
+  "outcomes": [
+    "Express parameter estimation as a model, scalar loss, gradient computation, and update rule.",
+    "Explain what autograd records and why gradients accumulate on leaf tensors.",
+    "Write a correct optimizer loop and a gradient-free validation loop.",
+    "Diagnose unstable learning by inspecting scale, learning rate, loss history, and finite gradients."
+  ],
+  "sections": [
+    {
+      "id": "parameter-estimation",
+      "title": "Begin with a model you can inspect",
+      "summary": "A two-parameter temperature conversion exposes every moving part of learning.",
+      "body": [
+        "The chapter's temperature example predicts a known target from an observed measurement using a scale parameter and a bias. The values start wrong, but the model is differentiable: a small change in either parameter produces a measurable change in the prediction and loss.",
+        "A simple model is not a toy to skip. It lets us verify the loss surface, gradient sign, update direction, and unit scale before neural-network layers hide those details behind thousands of parameters."
+      ],
+      "code": {
+        "title": "Model and mean-squared error",
+        "language": "python",
+        "source": "import torch\n\ntrain_observed = torch.tensor([35.7, 58.2, 81.9, 56.3, 33.9, 21.8, 60.4, 68.4])\ntrain_target = torch.tensor([0.5, 15.0, 28.0, 11.0, 3.0, -4.0, 13.0, 21.0])\n\ndef model(x, scale, bias):\n    return scale * x + bias\n\ndef loss_fn(prediction, truth):\n    return (prediction - truth).square().mean()\n\nscale = torch.tensor(1.0)\nbias = torch.tensor(0.0)\nprint(loss_fn(model(train_observed, scale, bias), train_target))"
+      },
+      "points": [
+        "The model maps observations to predictions.",
+        "The loss reduces all prediction errors to one optimization objective.",
+        "Parameters are the values the update rule is allowed to change.",
+        "The dataset and objective define what a good parameter means."
+      ]
+    },
+    {
+      "id": "scale-gradients",
+      "title": "See how scale controls optimization",
+      "summary": "A mathematically valid gradient can still produce an unusable update when features or the learning rate are poorly scaled.",
+      "body": [
+        "The derivative with respect to a parameter includes the magnitude of its input. If temperature observations are tens of units while the bias input is effectively one, the scale gradient can be much larger than the bias gradient. A shared learning rate may then overshoot.",
+        "Normalize inputs using statistics fitted on training data or choose parameter-specific optimization deliberately. Always inspect finite loss and gradient values when training diverges; reducing the learning rate without understanding scale can hide the root cause."
+      ],
+      "code": {
+        "title": "Normalize one feature",
+        "language": "python",
+        "source": "import torch\n\ntrain_observed = torch.tensor([35.7, 58.2, 81.9, 56.3, 33.9, 21.8, 60.4, 68.4])\ntrain_mean = train_observed.mean()\ntrain_std = train_observed.std().clamp_min(1e-8)\ntrain_observed_normalized = (train_observed - train_mean) / train_std\n\nassert abs(train_observed_normalized.mean().item()) < 1e-6\nassert torch.isfinite(train_observed_normalized).all().item()"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Fit statistics before evaluation",
+          "body": "Use only the training split to compute mean and standard deviation. Evaluation data must not influence the learned representation."
+        }
+      ]
+    },
+    {
+      "id": "autograd-graph",
+      "title": "Let autograd apply the chain rule",
+      "summary": "Operations involving requires-grad inputs build a graph that backward traverses from loss to leaves.",
+      "body": [
+        "Autograd records operations during the forward pass when at least one required input participates. The resulting tensors point to gradient functions, while user-created parameters are normally leaves. Calling backward() on a scalar loss propagates derivatives through the graph and accumulates them in the .grad fields of eligible leaves.",
+        "The graph is rebuilt on each ordinary forward pass, which is why Python control flow can change between iterations. Do not detach an intermediate that the loss must differentiate through."
+      ],
+      "code": {
+        "title": "Inspect leaf gradients",
+        "language": "python",
+        "source": "import torch\n\ntrain_observed = torch.tensor([35.7, 58.2, 81.9, 56.3, 33.9, 21.8, 60.4, 68.4])\ntrain_target = torch.tensor([0.5, 15.0, 28.0, 11.0, 3.0, -4.0, 13.0, 21.0])\ntrain_observed_normalized = (train_observed - train_observed.mean()) / train_observed.std().clamp_min(1e-8)\n\ndef model(x, scale, bias):\n    return scale * x + bias\n\ndef loss_fn(prediction, truth):\n    return (prediction - truth).square().mean()\n\nparameters = torch.tensor([1.0, 0.0], requires_grad=True)\nprediction = model(train_observed_normalized, parameters[0], parameters[1])\nloss = loss_fn(prediction, train_target)\nloss.backward()\n\nprint(\"loss grad_fn:\", loss.grad_fn)\nprint(\"parameter grad:\", parameters.grad)\nassert parameters.is_leaf"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Backward accumulates",
+          "body": "After a new forward pass, calling backward without clearing adds to an existing leaf gradient. Calling backward twice on the same graph requires retain_graph=True and is normally unnecessary; ordinary optimizer steps should clear previous gradients first."
+        }
+      ]
+    },
+    {
+      "id": "optimizer-loop",
+      "title": "Use the canonical optimizer sequence",
+      "summary": "Clear, predict, measure, differentiate, and step in a stable visible order.",
+      "body": [
+        "An optimizer owns references to the parameters and applies an update rule using their gradients. It does not compute the loss or call backward. Keeping those responsibilities visible makes the loop easy to debug and generalizes to neural networks.",
+        "Optimizer.zero_grad(set_to_none=True) clears old gradients by setting their fields to None. This is the current default and can avoid unnecessary writes. It also makes a parameter that received no gradient distinguishable from one whose gradient is numerically zero."
+      ],
+      "code": {
+        "title": "A complete optimizer loop",
+        "language": "python",
+        "source": "import torch\n\ntrain_observed = torch.tensor([35.7, 58.2, 81.9, 56.3, 33.9, 21.8, 60.4, 68.4])\ntrain_target = torch.tensor([0.5, 15.0, 28.0, 11.0, 3.0, -4.0, 13.0, 21.0])\nvalidation_observed = torch.tensor([55.9, 48.9, 48.4])\nvalidation_target = torch.tensor([14.0, 8.0, 6.0])\n\ntrain_mean = train_observed.mean()\ntrain_std = train_observed.std().clamp_min(1e-8)\ntrain_observed_normalized = (train_observed - train_mean) / train_std\n\ndef model(x, scale, bias):\n    return scale * x + bias\n\ndef loss_fn(prediction, truth):\n    return (prediction - truth).square().mean()\n\nparameters = torch.tensor([1.0, 0.0], requires_grad=True)\noptimizer = torch.optim.SGD([parameters], lr=0.05)\n\nfor step in range(500):\n    optimizer.zero_grad(set_to_none=True)\n    prediction = model(train_observed_normalized, parameters[0], parameters[1])\n    loss = loss_fn(prediction, train_target)\n    loss.backward()\n    optimizer.step()\n\nassert torch.isfinite(parameters).all().item()\nprint(parameters.detach(), loss.item())"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not update through .data",
+          "body": "Use an optimizer or a no-grad block for deliberate manual updates. .data can mutate values without autograd's normal correctness checks."
+        }
+      ]
+    },
+    {
+      "id": "validation",
+      "title": "Measure generalization on a separate path",
+      "summary": "Validation uses fixed parameters and no optimizer, so gradient recording is unnecessary.",
+      "body": [
+        "A falling training loss proves only that the optimizer fits the examples it sees. Hold out validation samples before fitting preprocessing statistics, then report validation loss at a useful interval. The validation path must not call backward or optimizer.step.",
+        "For modules, pair model.eval() with torch.inference_mode(). The temperature function has no train/eval state, but inference mode still communicates that the result will not participate in learning."
+      ],
+      "code": {
+        "title": "Gradient-free validation",
+        "language": "python",
+        "source": "import torch\n\n# Prerequisite: run \"A complete optimizer loop\" immediately above.\n# It defines validation data, train-only statistics, model, loss_fn, and parameters.\nvalidation_observed_normalized = (validation_observed - train_mean) / train_std\n\nwith torch.inference_mode():\n    validation_prediction = model(\n        validation_observed_normalized,\n        parameters[0],\n        parameters[1],\n    )\n    validation_loss = loss_fn(validation_prediction, validation_target)\n\nprint(validation_loss.item())"
+      },
+      "points": [
+        "Split before computing normalization statistics.",
+        "Never select a final result from test data repeatedly.",
+        "Record both training and validation curves.",
+        "Copy or serialize the best state rather than retaining a mutable reference."
+      ]
+    },
+    {
+      "id": "debugging-learning",
+      "title": "Debug learning with evidence",
+      "summary": "Loss curves, finite checks, gradient norms, and a tiny overfit test reveal different failure classes.",
+      "body": [
+        "A flat loss can mean disconnected parameters, an excessively small learning rate, saturated operations, or constant inputs. An exploding or NaN loss can point to scale, division, invalid logarithms, or an excessive learning rate. Print representative gradients instead of guessing.",
+        "A powerful pipeline test is to overfit a tiny batch. If a model with enough capacity cannot drive that small training loss down, investigate data-target pairing, the forward path, loss assumptions, gradient presence, and update execution before running a long experiment."
+      ],
+      "code": {
+        "title": "Fail fast on invalid training state",
+        "language": "python",
+        "source": "import torch\n\nx = torch.tensor([-1.0, 0.0, 1.0])\ny = torch.tensor([-2.0, 1.0, 4.0])\nparameters = torch.tensor([0.0, 0.0], requires_grad=True)\noptimizer = torch.optim.SGD([parameters], lr=0.05)\n\nfor step in range(100):\n    optimizer.zero_grad(set_to_none=True)\n    prediction = parameters[0] * x + parameters[1]\n    loss = (prediction - y).square().mean()\n    if not torch.isfinite(loss).item():\n        raise RuntimeError(f\"non-finite loss at step {step}: {loss.item()}\")\n\n    loss.backward()\n    if parameters.grad is None:\n        raise RuntimeError(\"parameters received no gradient\")\n    if not torch.isfinite(parameters.grad).all().item():\n        raise RuntimeError(f\"non-finite gradient at step {step}\")\n\n    optimizer.step()\n    if not torch.isfinite(parameters).all().item():\n        raise RuntimeError(f\"non-finite parameters after step {step}\")\n\nprint(parameters.detach())"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Gradient clearing",
+      "book": "The optimizer notebooks call zero_grad() before each backward pass.",
+      "current": "Use optimizer.zero_grad(set_to_none=True)",
+      "reason": "Setting gradients to None is the current default, reduces memory writes, and distinguishes a missing gradient from a computed zero gradient."
+    },
+    {
+      "topic": "Evaluation",
+      "book": "Small validation computations may run as ordinary tensor expressions.",
+      "current": "Use inference_mode() for validation and eval() when modules have training-dependent behavior",
+      "reason": "The explicit evaluation path avoids recording an unnecessary backward graph and prevents dropout or batch normalization from behaving as if training."
+    },
+    {
+      "topic": "Mixed precision",
+      "book": "The chapter focuses on transparent float32 optimization.",
+      "current": "Keep float32 as the teaching baseline and introduce torch.amp only as a measured extension",
+      "reason": "Autocast and gradient scaling can accelerate supported hardware, but they should follow a correct, numerically checked baseline."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch5--1_parameter_estimation",
+      "reason": "Use the visible two-parameter model to connect a loss surface with an update direction and input scaling."
+    },
+    {
+      "slug": "p1ch5--2_autograd",
+      "reason": "Inspect requires_grad, grad_fn, leaf gradients, backward, and the effect of repeated accumulation."
+    },
+    {
+      "slug": "p1ch5--3_optimizers",
+      "reason": "Replace manual updates with an optimizer and add a clean train/validation split."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Compare three gradient paths",
+      "prompt": "Compute the scale and bias gradients by finite differences, by an analytic expression, and by autograd at the same parameter values. Report absolute differences.",
+      "success": "all three methods agree within a stated tolerance and the finite-difference epsilon is justified"
+    },
+    {
+      "title": "Expose gradient accumulation",
+      "prompt": "Compute a forward pass and call backward, then recompute the same forward and loss and call backward again without clearing gradients. Record .grad after each call, then repeat with zero_grad(set_to_none=True). Explain why reusing the exact same graph would instead require retain_graph=True.",
+      "success": "the uncleared gradient doubles after the recomputed identical calculation, the cleared path starts from None, and graph reuse is distinguished from gradient accumulation"
+    },
+    {
+      "title": "Build a reviewed training loop",
+      "prompt": "Train on one split, validate under inference_mode(), record both losses, reject non-finite values, and save a copy of the best parameters.",
+      "success": "the best saved parameters reproduce the lowest recorded validation loss without any validation update"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Autograd mechanics",
+      "url": "https://docs.pytorch.org/docs/stable/notes/autograd.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Tensor.backward",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.Tensor.backward.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Locally disabling gradient computation",
+      "url": "https://docs.pytorch.org/docs/stable/notes/autograd.html#locally-disabling-gradient-computation"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Optimizing model parameters",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Optimizer.zero_grad",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.optim.Optimizer.zero_grad.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Automatic mixed precision",
+      "url": "https://docs.pytorch.org/docs/stable/amp.html"
+    }
+  ]
+}
