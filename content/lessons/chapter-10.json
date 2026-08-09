@@ -1,0 +1,186 @@
+{
+  "chapter": 10,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 210,
+  "outcomes": [
+    "Implement a forward diffusion schedule and explain signal, noise, and timestep coefficients with tensor shapes.",
+    "Train a timestep-conditioned denoiser with a noise-prediction objective and sample with gradients disabled.",
+    "Compare U-Net and Diffusion Transformer denoisers without confusing architecture choice with the diffusion process.",
+    "Benchmark eager and compiled sampling fairly, including compilation warm-up and output-quality checks."
+  ],
+  "sections": [
+    {
+      "id": "forward-process",
+      "title": "Turn clean data into a controlled noise experiment",
+      "summary": "Forward diffusion supplies training pairs by combining a clean sample with known Gaussian noise at a sampled timestep.",
+      "body": [
+        "A beta schedule defines how much new noise enters at each step. From alpha_t = 1 - beta_t and the cumulative product alpha_bar_t, any noisy state x_t can be sampled directly from x_0 without simulating every earlier step. That direct formula makes randomized training batches practical.",
+        "Keep schedule tensors one-dimensional and gather the coefficient for each batch item. Reshape gathered values to [B, 1, ...] before multiplying an image or point cloud so broadcasting happens across feature dimensions rather than across examples."
+      ],
+      "points": [
+        "x_0 and sampled noise epsilon have the same shape, dtype, and device.",
+        "Each example may use a different integer timestep.",
+        "alpha_bar near one preserves signal; alpha_bar near zero leaves mostly noise.",
+        "A fixed torch.Generator makes schedule visualizations reproducible."
+      ],
+      "code": {
+        "title": "Sample x_t directly",
+        "language": "python",
+        "source": "import torch\n\ndef extract(values, timesteps, x):\n    if values.ndim != 1:\n        raise ValueError(\"schedule values must be one-dimensional\")\n    if timesteps.shape != (x.shape[0],):\n        raise ValueError(\"expected one timestep per batch item\")\n    values = values.to(device=x.device, dtype=x.dtype)\n    timesteps = timesteps.to(device=x.device, dtype=torch.long)\n    gathered = values.index_select(0, timesteps)\n    return gathered.reshape(x.shape[0], *([1] * (x.ndim - 1)))\n\ndef q_sample(x0, timesteps, alpha_bar, generator=None):\n    if not x0.is_floating_point():\n        raise TypeError(\"x0 must be floating point\")\n    noise = torch.randn(\n        x0.shape, device=x0.device, dtype=x0.dtype, generator=generator,\n    )\n    keep = extract(alpha_bar.sqrt(), timesteps, x0)\n    add = extract((1 - alpha_bar).sqrt(), timesteps, x0)\n    return keep * x0 + add * noise, noise\n\nx0 = torch.randn(4, 2)\nalpha_bar = torch.linspace(0.999, 0.001, 100)\nt = torch.tensor([0, 25, 50, 99])\nxt, sampled_noise = q_sample(x0, t, alpha_bar)\nassert xt.shape == sampled_noise.shape == x0.shape"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Test the endpoints",
+          "body": "Plot clean, early, middle, and late timesteps. A reversed cumulative product or a missing square root can still produce plausible-looking tensors while teaching the wrong process."
+        }
+      ]
+    },
+    {
+      "id": "time-conditioned-loss",
+      "title": "Teach a model which noise was added",
+      "summary": "The denoiser receives x_t and t, then predicts the exact noise used to construct the training example.",
+      "body": [
+        "A sinusoidal timestep embedding turns scalar time into features spanning several frequencies. A learned projection injects those features into each denoising block, allowing one network to solve many noise levels rather than training a separate model per step.",
+        "The common teaching objective is mean-squared error between predicted and sampled noise. Sample t uniformly, generate x_t and epsilon together, predict epsilon, and backpropagate the loss. Keep the target noise detached by construction; it is sampled data, not a parameterized result. Create one GradScaler before the training loop and reuse it; recreating it every step discards its dynamic scale history."
+      ],
+      "code": {
+        "title": "One noise-prediction step",
+        "language": "python",
+        "source": "import torch\n\ndef make_grad_scaler(device):\n    return torch.amp.GradScaler(\n        \"cuda\", enabled=device.type == \"cuda\",\n    )\n\ndef noise_prediction_step(\n    model, optimizer, scaler, x0, alpha_bar, q_sample_fn,\n):\n    \"\"\"Run one step with every project object passed explicitly.\"\"\"\n    model.train()\n    optimizer.zero_grad(set_to_none=True)\n    t = torch.randint(\n        0, len(alpha_bar), (x0.shape[0],), device=x0.device,\n    )\n    xt, target_noise = q_sample_fn(x0, t, alpha_bar)\n    use_amp = x0.device.type == \"cuda\"\n    with torch.autocast(\n        device_type=x0.device.type, dtype=torch.float16, enabled=use_amp,\n    ):\n        predicted_noise = model(xt, t)\n        loss = torch.nn.functional.mse_loss(\n            predicted_noise, target_noise,\n        )\n    scaler.scale(loss).backward()\n    scaler.step(optimizer)\n    scaler.update()\n    return loss.detach()"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Use the current AMP namespace",
+          "body": "For float16 training use torch.autocast and torch.amp.GradScaler. The older torch.cuda.amp entry points are deprecated in current PyTorch."
+        }
+      ]
+    },
+    {
+      "id": "unet-denoiser",
+      "title": "Use a U-Net to mix local detail and global context",
+      "summary": "Downsampling expands receptive field, skip connections recover detail, and time features condition every scale.",
+      "body": [
+        "A compact U-Net alternates convolutional blocks and spatial downsampling, then upsamples while concatenating encoder features. Every stage must document channel count and spatial resolution. Skip concatenation errors are usually padding or stride errors, so assert shapes before training for hours.",
+        "The diffusion schedule and loss do not depend on MNIST or CIFAR-10. The notebook progression deliberately moves from points to images: only x shape and denoiser architecture change. Normalize training images into the range expected by the final output and reverse that transformation only for display."
+      ],
+      "points": [
+        "Convolution expects [B, C, H, W].",
+        "Time projections are reshaped to [B, C, 1, 1] before addition.",
+        "Skip tensors must match decoder spatial dimensions.",
+        "Display conversion is not part of the training graph."
+      ],
+      "code": {
+        "title": "Assert the denoiser contract",
+        "language": "python",
+        "source": "import torch\n\n@torch.inference_mode()\ndef assert_denoiser_contract(model, images, timesteps):\n    \"\"\"Check an injected denoiser on an already prepared batch.\"\"\"\n    if timesteps.shape != (images.shape[0],):\n        raise ValueError(\"expected one timestep per image\")\n    model.eval()\n    predicted = model(images, timesteps)\n    assert predicted.shape == images.shape\n    assert predicted.device == images.device\n    return predicted"
+      }
+    },
+    {
+      "id": "dit-denoiser",
+      "title": "Replace the convolutional denoiser with patch tokens",
+      "summary": "A DiT predicts image noise with Transformer blocks while the forward and reverse diffusion equations stay unchanged.",
+      "body": [
+        "Patchify x_t, project patches into a model width, combine timestep conditioning with token representations, and process the sequence with attention and feed-forward blocks. The output projection restores each token to patch pixels, and unpatchify returns the original image layout.",
+        "The notebook implements multi-head attention directly to reveal its components. Retain that version for derivation, then route current code through scaled_dot_product_attention. Confirm patchify/unpatchify round trips and compare custom versus SDPA outputs before judging speed."
+      ],
+      "code": {
+        "title": "Use SDPA inside a DiT head layout",
+        "language": "python",
+        "source": "import torch\nimport torch.nn.functional as F\n\ndef dit_attention(q, k, v, *, dropout_p=0.0, training=False):\n    \"\"\"Attend over image patches; q, k, v are injected tensors.\"\"\"\n    return F.scaled_dot_product_attention(\n        q, k, v,\n        dropout_p=dropout_p if training else 0.0,\n        is_causal=False,\n    )"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not copy the language-model mask",
+          "body": "Image diffusion tokens normally attend bidirectionally. Causal masking from Chapter 9 would unnecessarily hide later image patches."
+        }
+      ]
+    },
+    {
+      "id": "reverse-sampling",
+      "title": "Sample backward as a measured numerical procedure",
+      "summary": "Reverse diffusion repeatedly predicts noise and updates the current sample from the largest timestep to zero.",
+      "body": [
+        "Initialize x_T from Gaussian noise, iterate timesteps in reverse, predict the noise component, compute the posterior mean, and add variance except at the final step. A sign, coefficient, or indexing error compounds across every iteration, so inspect intermediate states instead of looking only at the last image.",
+        "Sampling does not need gradients. Put the model in evaluation mode and wrap the loop with torch.inference_mode. Accept a generator and return tensors before visualization so correctness tests can compare repeated runs independently from plotting libraries. A supplied generator must target the same device as the random tensors it creates."
+      ],
+      "code": {
+        "title": "An inference-only sampling boundary",
+        "language": "python",
+        "source": "import torch\n\n@torch.inference_mode()\ndef sample(model, shape, schedule, device, generator=None):\n    \"\"\"Sample with model and schedule supplied by the caller.\"\"\"\n    model.eval()\n    x = torch.randn(shape, device=device, generator=generator)\n    for step in reversed(range(schedule.steps)):\n        t = torch.full(\n            (shape[0],), step, device=device, dtype=torch.long,\n        )\n        predicted_noise = model(x, t)\n        x = schedule.reverse_step(\n            x, t, predicted_noise, generator=generator,\n        )\n    return x"
+      }
+    },
+    {
+      "id": "compile-and-evaluate",
+      "title": "Compile the hot loop and keep quality in the benchmark",
+      "summary": "Diffusion repeats the denoiser many times, making it a strong compilation target but also magnifying numerical mistakes.",
+      "body": [
+        "Compile the denoiser rather than the Python sampling loop, data loader, or plotting code. Run an eager reference, compile, execute warm-up calls, synchronize the accelerator around timed regions, and test representative batch sizes and resolutions. Record cold compilation latency separately from steady-state latency.",
+        "A faster sampler is useful only if it preserves acceptable outputs. With a fixed initial noise tensor, compare eager and compiled intermediate predictions within tolerance. Then assess generated samples with the same qualitative grid or quantitative metric and report peak memory alongside latency."
+      ],
+      "code": {
+        "title": "Separate cold and warm execution",
+        "language": "python",
+        "source": "from time import perf_counter\nimport torch\n\ndef synchronize_cuda(tensor):\n    if tensor.is_cuda:\n        torch.cuda.synchronize(tensor.device)\n\ndef compile_and_compare(model, xt, timesteps):\n    \"\"\"Return a compiled model plus separate cold and warm latency.\"\"\"\n    model.eval()\n    compiled_model = torch.compile(model)\n    with torch.inference_mode():\n        eager_pred = model(xt, timesteps)\n\n        synchronize_cuda(xt)\n        start = perf_counter()\n        _ = compiled_model(xt, timesteps)\n        synchronize_cuda(xt)\n        cold_seconds = perf_counter() - start\n\n        start = perf_counter()\n        compiled_pred = compiled_model(xt, timesteps)\n        synchronize_cuda(xt)\n        warm_seconds = perf_counter() - start\n\n    torch.testing.assert_close(\n        compiled_pred, eager_pred, rtol=2e-3, atol=2e-3,\n    )\n    return compiled_model, cold_seconds, warm_seconds"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Attention",
+      "book": "The DiT notebook implements query, key, value, masking, softmax, and projection directly.",
+      "current": "Use scaled_dot_product_attention after deriving the operation",
+      "reason": "SDPA gives PyTorch control over optimized attention kernels and integrates with compilation. DiT attention is bidirectional, unlike causal language attention."
+    },
+    {
+      "topic": "Mixed precision",
+      "book": "The small examples emphasize a readable full-precision loop.",
+      "current": "Use torch.autocast with torch.amp.GradScaler for float16 training",
+      "reason": "The torch.amp entry points are current, while torch.cuda.amp aliases are deprecated. This lesson enables float16 AMP only on CUDA and always compares convergence with the eager full-precision baseline."
+    },
+    {
+      "topic": "Inference performance",
+      "book": "Reverse diffusion calls the denoiser eagerly at every timestep.",
+      "current": "Compile the repeated denoiser and report cold versus warm latency",
+      "reason": "torch.compile can fuse operations and reduce framework overhead, but first-call compilation and shape-triggered recompilation must not be hidden."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch10--motivator", "reason": "See the high-level generative result before unpacking the forward and reverse processes."},
+    {"slug": "p2ch10--forward_diffusion", "reason": "Visualize beta schedules and direct noising first on an interpretable two-dimensional shape."},
+    {"slug": "p2ch10--training", "reason": "Train a timestep-conditioned point denoiser and inspect the noise-prediction objective."},
+    {"slug": "p2ch10--unet", "reason": "Build the image U-Net, trace skip shapes, and connect the same diffusion utilities to CIFAR-10."},
+    {"slug": "p2ch10--mnist", "reason": "Run a compact end-to-end image training and sampling workflow."},
+    {"slug": "p2ch10--dit", "reason": "Compare patch-token Transformer denoising with the convolutional U-Net."},
+    {"slug": "p2ch10--vis", "reason": "Inspect saved samples and presentation utilities separately from the training graph."}
+  ],
+  "exercises": [
+    {
+      "title": "Audit a noise schedule",
+      "prompt": "Implement two beta schedules, plot beta and cumulative alpha, and show the same clean examples at five matched timesteps. Assert all cumulative values remain in (0, 1] and are non-increasing.",
+      "success": "the assertions pass and the visual report explains how the schedules preserve or destroy signal differently"
+    },
+    {
+      "title": "Compare denoisers fairly",
+      "prompt": "Configure a small U-Net and DiT for the same image shape and schedule. Report parameter count, one-step loss, forward latency, and peak memory on the same batch.",
+      "success": "both models return noise with the input shape and the comparison holds data, timestep sampling, device, and precision constant"
+    },
+    {
+      "title": "Benchmark compiled sampling",
+      "prompt": "Benchmark eager and compiled denoisers inside the same sampler. Separate cold compilation, warm p50 latency, and peak memory, then compare outputs from identical initial noise.",
+      "success": "the report contains synchronized timings, explicit warm-up, eager parity tolerances, and no unsupported speed-only conclusion"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "Accelerated generative diffusion models", "url": "https://pytorch.org/blog/accelerated-generative-diffusion-models/"},
+    {"type": "Official PyTorch", "title": "torch.compile and diffusion pipelines", "url": "https://docs.pytorch.org/devlogs/inductor/2026-05-11-torch-compile-and-diffusers/"},
+    {"type": "Official PyTorch", "title": "Automatic mixed precision", "url": "https://docs.pytorch.org/docs/2.13/amp.html"},
+    {"type": "Official PyTorch", "title": "Scaled dot-product attention", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.nn.functional.scaled_dot_product_attention.html"},
+    {"type": "Official PyTorch", "title": "torch.compile", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.compile.html"},
+    {"type": "Research paper", "title": "Denoising Diffusion Probabilistic Models", "url": "https://arxiv.org/abs/2006.11239"}
+  ]
+}
