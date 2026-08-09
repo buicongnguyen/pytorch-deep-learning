@@ -1,0 +1,220 @@
+{
+  "chapter": 6,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 135,
+  "outcomes": [
+    "Compose linear layers and nonlinear activations into a trainable neural network.",
+    "Explain how nn.Module registers submodules, parameters, and persistent buffers.",
+    "Choose between Sequential and a custom forward method based on the computation rather than style.",
+    "Save, restore, inspect, and optionally compile a module while preserving an eager correctness baseline."
+  ],
+  "sections": [
+    {
+      "id": "from-linear-to-network",
+      "title": "Turn a fitted function into a network",
+      "summary": "A neural network alternates learned affine transformations with nonlinear operations.",
+      "body": [
+        "An nn.Linear layer computes an affine transformation and owns its weight and optional bias as parameters. Stacking only linear layers still collapses to one linear transformation, regardless of depth. Nonlinear activations let the composition represent curved and piecewise relationships.",
+        "Keep the input and output contracts visible. A batch of N examples with F features has shape N × F; a regression layer that predicts one value per example returns N × 1."
+      ],
+      "code": {
+        "title": "A small regression network",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nmodel = nn.Sequential(\n    nn.Linear(1, 16),\n    nn.Tanh(),\n    nn.Linear(16, 1),\n)\n\nbatch = torch.randn(8, 1)\nprediction = model(batch)\nassert prediction.shape == (8, 1)"
+      },
+      "points": [
+        "Layer widths define feature counts, not batch size.",
+        "The final layer shape must agree with the target and loss.",
+        "Parameters begin from an initialization and are changed by an optimizer.",
+        "The activation changes expressiveness and gradient flow."
+      ]
+    },
+    {
+      "id": "activation-behavior",
+      "title": "Study activations through outputs and gradients",
+      "summary": "Tanh, ReLU, GELU, and SiLU make different tradeoffs; none is universally correct.",
+      "body": [
+        "An activation's forward curve shows which values it suppresses or preserves. Its derivative shows where a parameter can receive a strong, weak, or zero learning signal. Saturation, output centering, smoothness, and computational cost can all matter.",
+        "Compare activations under the same seed, initialization, data order, optimizer, and parameter budget. A different final loss is meaningful only when the rest of the experiment is controlled."
+      ],
+      "code": {
+        "title": "Inspect activation gradients",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nx = torch.linspace(-5, 5, 201, requires_grad=True)\nactivations = {\n    \"tanh\": nn.Tanh(),\n    \"relu\": nn.ReLU(),\n    \"gelu\": nn.GELU(),\n    \"silu\": nn.SiLU(),\n}\n\nfor name, activation in activations.items():\n    x.grad = None\n    activation(x).sum().backward()\n    print(name, x.grad.min().item(), x.grad.max().item())"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "An activation is an experimental choice",
+          "body": "Preserve Tanh where it clarifies the book's example, then compare current common alternatives without claiming that one wins every task."
+        }
+      ]
+    },
+    {
+      "id": "sequential-composition",
+      "title": "Use Sequential for a straight path",
+      "summary": "Sequential names and executes a simple chain while registering every child module.",
+      "body": [
+        "nn.Sequential is appropriate when each module consumes the previous module's single output. It provides concise construction, a useful printed representation, and ordinary parameter registration. Ordered descriptive names can make checkpoint keys and debugging output easier to read.",
+        "Do not force branching, multiple inputs, residual additions, or conditional behavior into Sequential. Those computations are clearer in a custom forward method."
+      ],
+      "code": {
+        "title": "Name the stages of a sequential model",
+        "language": "python",
+        "source": "from collections import OrderedDict\nfrom torch import nn\n\nmodel = nn.Sequential(OrderedDict([\n    (\"hidden\", nn.Linear(1, 16)),\n    (\"hidden_activation\", nn.Tanh()),\n    (\"output\", nn.Linear(16, 1)),\n]))\n\nfor name, parameter in model.named_parameters():\n    print(name, tuple(parameter.shape), parameter.numel())"
+      }
+    },
+    {
+      "id": "module-subclass",
+      "title": "Subclass Module when the computation has structure",
+      "summary": "Assign state in __init__, express data flow in forward, and let __call__ manage module behavior.",
+      "body": [
+        "A custom module must call super().__init__() before assigning submodules. Modules stored as attributes are registered recursively, so parameters appear in parameters(), follow device transfers, and enter state_dict(). Raw tensors that should be learned must be wrapped in nn.Parameter; non-learned state can be registered as a buffer.",
+        "Define forward() but invoke the module as model(inputs). Calling forward directly bypasses the machinery around hooks and module calls. The forward method can use normal Python and ordinary tensor operations."
+      ],
+      "code": {
+        "title": "A custom residual-style regressor",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nclass Regressor(nn.Module):\n    def __init__(self, width: int = 16):\n        super().__init__()\n        self.input = nn.Linear(1, width)\n        self.hidden = nn.Linear(width, width)\n        self.output = nn.Linear(width, 1)\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        features = torch.tanh(self.input(x))\n        features = features + torch.tanh(self.hidden(features))\n        return self.output(features)\n\nmodel = Regressor()\nassert model(torch.randn(4, 1)).shape == (4, 1)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "A plain list does not register children",
+          "body": "When storing a variable collection of layers, use nn.ModuleList or another module container so parameters remain visible to the optimizer and state dictionary."
+        }
+      ]
+    },
+    {
+      "id": "module-state",
+      "title": "Inspect and preserve module state",
+      "summary": "A state dictionary contains parameters and persistent buffers under stable hierarchical keys.",
+      "body": [
+        "The optimizer receives model.parameters(), while diagnostics often benefit from named_parameters(). A state dictionary provides a flexible boundary for saving learned state without routinely pickling the entire Python model object.",
+        "Construct the intended architecture before loading. Use weights_only=True during deserialization and strict loading when the checkpoint is expected to match exactly. The restricted loader narrows what can be reconstructed, but a checkpoint from an untrusted source must still not be loaded. For best-model tracking in memory, copy the state because state_dict() values refer to live tensor state."
+      ],
+      "code": {
+        "title": "Round-trip a state dictionary",
+        "language": "python",
+        "source": "from pathlib import Path\nfrom tempfile import TemporaryDirectory\n\nimport torch\nfrom torch import nn\n\nclass Regressor(nn.Module):\n    def __init__(self, width: int = 16):\n        super().__init__()\n        self.input = nn.Linear(1, width)\n        self.hidden = nn.Linear(width, width)\n        self.output = nn.Linear(width, 1)\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        features = torch.tanh(self.input(x))\n        features = features + torch.tanh(self.hidden(features))\n        return self.output(features)\n\nmodel = Regressor().eval()\nwith TemporaryDirectory() as directory:\n    checkpoint = Path(directory) / \"regressor.pt\"\n    torch.save(model.state_dict(), checkpoint)\n    state = torch.load(checkpoint, map_location=\"cpu\", weights_only=True)\n\nrestored = Regressor().eval()\nrestored.load_state_dict(state, strict=True)\nexample = torch.randn(3, 1)\nwith torch.inference_mode():\n    torch.testing.assert_close(model(example), restored(example))"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Restricted loading is not a trust boundary",
+          "body": "weights_only=True limits the objects the unpickler may reconstruct, but PyTorch still warns never to load data from an untrusted source. Obtain checkpoints from a trusted origin and verify their integrity."
+        }
+      ]
+    },
+    {
+      "id": "outputs-and-compilation",
+      "title": "Keep outputs compatible and optimize last",
+      "summary": "Loss functions define output expectations; compilation is a performance experiment after correctness.",
+      "body": [
+        "A regression model may emit unrestricted floating-point predictions for MSELoss. A multiclass model used with CrossEntropyLoss should emit raw logits rather than applying Softmax or LogSoftmax in its final layer. Convert logits to probabilities only in an evaluation or reporting step.",
+        "PyTorch 2.13 can compile a callable or module to optimize supported workloads. Backend, Python-version, and compiler-toolchain availability vary by platform. Compare compiled and eager results on representative inputs, allow for warm-up, and benchmark on the target device. Keep eager mode available for debugging graph breaks and correctness."
+      ],
+      "code": {
+        "title": "Check before optional compilation",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nclass Regressor(nn.Module):\n    def __init__(self, width: int = 16):\n        super().__init__()\n        self.layers = nn.Sequential(nn.Linear(1, width), nn.Tanh(), nn.Linear(width, 1))\n\n    def forward(self, x: torch.Tensor) -> torch.Tensor:\n        return self.layers(x)\n\nmodel = Regressor().eval()\nexample = torch.randn(32, 1)\nwith torch.inference_mode():\n    eager_output = model(example)\n\ntry:\n    compiled = torch.compile(model)\n    with torch.inference_mode():\n        compiled_output = compiled(example)\nexcept RuntimeError as error:\n    print(\"Optional compilation is unavailable in this environment:\", error)\nelse:\n    torch.testing.assert_close(eager_output, compiled_output, rtol=1e-4, atol=1e-5)"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Compile is not a model redesign",
+          "body": "Compilation should preserve the model contract. A speed claim requires representative timing; equal outputs alone do not prove a speedup. The default backend may also require a platform compiler toolchain."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Module structure",
+      "book": "The chapter compares Sequential, ordered names, and a custom nn.Module.",
+      "current": "Retain the comparison and make registration rules explicit",
+      "reason": "Current Module behavior still centers on registered submodules, parameters, and buffers; understanding registration prevents invisible state and optimizer omissions."
+    },
+    {
+      "topic": "Checkpointing",
+      "book": "The model's parameter state is inspected as part of the learning process.",
+      "current": "Save state_dict() and deserialize with weights_only=True",
+      "reason": "State dictionaries are inspectable and less coupled to Python class pickling, provided the reconstructed architecture and state keys still match."
+    },
+    {
+      "topic": "Performance",
+      "book": "Eager Module execution is the standard path.",
+      "current": "Offer torch.compile as an optional, tested benchmark",
+      "reason": "PyTorch 2.13 can optimize a supported module, but eager correctness and target-hardware measurements remain prerequisites."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch6--1_neural_networks",
+      "reason": "Move from the fitted scalar model to Linear layers, nonlinear composition, parameter inspection, and training."
+    },
+    {
+      "slug": "p1ch6--2_activation_functions",
+      "reason": "Compare forward curves and derivatives while controlling the rest of the experiment."
+    },
+    {
+      "slug": "p1ch6--3_nn_module_subclassing",
+      "reason": "Contrast Sequential and custom Module construction, then review parameter registration and forward behavior."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Prove two modules are equivalent",
+      "prompt": "Implement the same feed-forward network with Sequential and a custom Module, copy the state by matching keys, and compare outputs for several random batches.",
+      "success": "torch.testing.assert_close passes and every parameter has a documented counterpart"
+    },
+    {
+      "title": "Run a controlled activation study",
+      "prompt": "Train identical-width models with Tanh, ReLU, GELU, and SiLU using the same initialization seed and batch order. Plot losses and report gradient norms.",
+      "success": "the comparison changes only the activation and explains at least one observed gradient difference"
+    },
+    {
+      "title": "Review the state boundary",
+      "prompt": "Save a model state dictionary, restore it on CPU with weights_only=True, verify identical predictions, then deliberately change one layer width and record the strict-loading error.",
+      "success": "the valid round trip matches and the incompatible architecture fails with understandable missing or size-mismatch information"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Module",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Modules note",
+      "url": "https://docs.pytorch.org/docs/stable/notes/modules.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Build the neural network",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Serialization semantics",
+      "url": "https://docs.pytorch.org/docs/stable/notes/serialization.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.load",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.load.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.compile",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"
+    }
+  ]
+}
