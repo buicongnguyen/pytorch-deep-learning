@@ -1,0 +1,211 @@
+{
+  "chapter": 15,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 240,
+  "outcomes": [
+    "Represent binary segmentation logits and masks consistently and compute Dice and IoU with explicit empty-mask behavior.",
+    "Use automatic and point-prompt foundation-model segmentation while measuring sensitivity to preprocessing and prompts.",
+    "Generate an auditable pseudo-label dataset that preserves source identity, model revision, prompt, and review status.",
+    "Fine-tune and evaluate a semantic segmenter with paired image/mask transforms, safe checkpoints, and patient-level splits.",
+    "Distinguish useful transfer from clinical validity and document licensing, provenance, and failure modes."
+  ],
+  "sections": [
+    {
+      "id": "segmentation-contract",
+      "title": "Define the pixel-level contract before choosing a model",
+      "summary": "Segmentation maps each spatial location to a class, so logits, masks, thresholds, and reductions must agree.",
+      "body": [
+        "For binary segmentation, a model can return one logit channel [B, 1, H, W] and use BCEWithLogitsLoss, or two class logits and cross-entropy. Ground-truth masks are spatial targets, not RGB pictures. Preserve them as boolean or integer class tensors and never normalize their label values like image intensities.",
+        "Dice and IoU summarize overlap after a threshold or argmax. Keep training loss and reporting metric as separate functions, define whether reduction happens per image or over the batch, and explicitly handle the case where both prediction and target are empty."
+      ],
+      "points": [
+        "Logits are unbounded model outputs; probabilities come from sigmoid or softmax.",
+        "Masks must share the image's transformed geometry.",
+        "A threshold belongs to the validation-selected decision rule.",
+        "Report overlap with failure counts and representative examples."
+      ],
+      "code": {
+        "title": "A per-image soft Dice score",
+        "language": "python",
+        "source": "import torch\n\ndef soft_dice(logits, targets, eps=1e-6):\n    if logits.ndim < 4 or logits.shape[1] != 1:\n        raise ValueError(\"expected binary logits with shape [B, 1, ...]\")\n    targets = torch.as_tensor(targets, device=logits.device)\n    if targets.ndim == logits.ndim - 1:\n        targets = targets.unsqueeze(1)\n    if targets.shape != logits.shape:\n        raise ValueError(\"targets must match logits, with an optional channel axis\")\n    if not bool(torch.isfinite(targets).all()):\n        raise ValueError(\"targets contain a non-finite value\")\n    if bool(((targets < 0) | (targets > 1)).any()):\n        raise ValueError(\"binary targets must lie in [0, 1]\")\n\n    probabilities = logits.sigmoid()\n    targets = targets.to(dtype=probabilities.dtype)\n    dims = tuple(range(1, probabilities.ndim))\n    intersection = (probabilities * targets).sum(dim=dims)\n    denominator = probabilities.sum(dim=dims) + targets.sum(dim=dims)\n    return (2 * intersection + eps) / (denominator + eps)\n\ndef soft_dice_loss(logits, targets):\n    return 1 - soft_dice(logits, targets).mean()"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Smooth terms define behavior",
+          "body": "An epsilon makes division finite and makes this implementation return 1 when both sums are exactly zero. State whether that is the reporting policy and test empty target, empty prediction, and both empty."
+        }
+      ]
+    },
+    {
+      "id": "automatic-and-prompted",
+      "title": "Compare automatic masks with explicit prompts",
+      "summary": "Foundation models can propose many masks or condition a prediction on points, but neither mode knows the medical task automatically.",
+      "body": [
+        "Automatic mask generation can reveal how a general model partitions an ordinary image. Inspect mask area, confidence fields, overlaps, and nested regions rather than displaying every colored proposal as equally meaningful. A point prompt supplies a stronger hypothesis, yet small coordinate changes can select a different object or subregion.",
+        "Use positive and negative prompt examples, preserve original image dimensions, and plot the prompt on the exact image given to the processor. Coordinate transforms introduced by resize or padding must be owned by the processor or reproduced exactly."
+      ],
+      "points": [
+        "Automatic proposals require a task-specific selection rule.",
+        "A point location is part of the model input and must be logged.",
+        "Confidence is not a substitute for ground-truth overlap.",
+        "Prompt sensitivity should be measured, not illustrated once."
+      ],
+      "code": {
+        "title": "Run prompt inference without autograd",
+        "language": "python",
+        "source": "import torch\n\ndef run_prompt_inference(model, processor_inputs):\n    model.eval()\n    with torch.inference_mode():\n        return model(**processor_inputs)\n\n# Decode the returned masks with the same processor and original-size metadata.\n# Retain prompt coordinates and candidate identity beside the result."
+      }
+    },
+    {
+      "id": "ct-preprocessing",
+      "title": "Bridge CT slices to an image-trained model transparently",
+      "summary": "Replicating a grayscale slice into RGB satisfies a shape requirement but does not erase the domain shift.",
+      "body": [
+        "Select and document a CT window, clip intensities, scale them to the processor's expected range, and create three channels only when the external model requires them. Plot the original intensity slice, windowed input, candidate point, and resulting mask together so preprocessing failures remain visible.",
+        "A candidate center expressed in volume coordinates must be converted to slice pixel coordinates without swapping axes. Test a known landmark and preserve series UID, slice index, world center, window, processor revision, and prompt in the output record."
+      ],
+      "code": {
+        "title": "Normalize a documented CT window",
+        "language": "python",
+        "source": "import torch\n\ndef window_to_rgb(slice_hu, low=-1000.0, high=400.0):\n    if high <= low:\n        raise ValueError(\"high must be greater than low\")\n    slice_hu = torch.as_tensor(slice_hu, dtype=torch.float32)\n    if slice_hu.ndim != 2:\n        raise ValueError(\"expected one CT slice with shape [H, W]\")\n\n    clipped = slice_hu.clamp(low, high)\n    unit = (clipped - low) / (high - low)\n    rgb = unit.unsqueeze(0).repeat(3, 1, 1)\n    if rgb.amin().item() < 0 or rgb.amax().item() > 1:\n        raise AssertionError(\"windowed values escaped [0, 1]\")\n    return rgb"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Shape compatibility is not domain validity",
+          "body": "An RGB-shaped CT tensor can run through an image model while producing medically meaningless masks. Ground-truth review and domain evaluation remain necessary."
+        }
+      ]
+    },
+    {
+      "id": "pseudo-label-provenance",
+      "title": "Treat generated masks as pseudo-labels, not ground truth",
+      "summary": "A useful generated dataset records how every mask was produced and whether it was reviewed.",
+      "body": [
+        "For each source slice, save a lossless image or tensor, a discrete mask, and structured metadata. Include source series, slice, candidate center, preprocessing window, model and processor revision, prompt, selection rule, generated score, timestamp, and review status. Store train, validation, and test membership from the original identity split.",
+        "Do not split generated images randomly after export. Multiple slices, prompts, or masks derived from one CT series remain related. Review a stratified sample before fine-tuning and version any filtering rule so later results can be traced to a specific pseudo-label release."
+      ],
+      "code": {
+        "title": "A provenance-rich pseudo-label record",
+        "language": "python",
+        "source": "def make_pseudo_label_record(\n    *,\n    series_uid,\n    slice_index,\n    candidate_world_xyz,\n    prompt_xy,\n    window_hu,\n    model_revision,\n    processor_revision,\n    selection_rule,\n    generated_score,\n    created_at_utc,\n    image_path,\n    mask_path,\n    split,\n    review_status=\"unreviewed\",\n):\n    candidate_world_xyz = [float(value) for value in candidate_world_xyz]\n    prompt_xy = [float(value) for value in prompt_xy]\n    window_hu = [float(value) for value in window_hu]\n    if len(candidate_world_xyz) != 3 or len(prompt_xy) != 2 or len(window_hu) != 2:\n        raise ValueError(\"expected XYZ, XY, and [low, high] coordinate contracts\")\n\n    return {\n        \"series_uid\": str(series_uid),\n        \"slice_index\": int(slice_index),\n        \"candidate_world_xyz\": candidate_world_xyz,\n        \"prompt_xy\": prompt_xy,\n        \"window_hu\": window_hu,\n        \"model_revision\": str(model_revision),\n        \"processor_revision\": str(processor_revision),\n        \"selection_rule\": str(selection_rule),\n        \"generated_score\": float(generated_score),\n        \"created_at_utc\": str(created_at_utc),\n        \"image_path\": str(image_path),\n        \"mask_path\": str(mask_path),\n        \"review_status\": str(review_status),\n        \"split\": str(split),\n    }"
+      }
+    },
+    {
+      "id": "paired-transforms",
+      "title": "Transform images and masks with one random decision",
+      "summary": "TorchVision transforms v2 can apply supported geometry consistently to an Image and Mask tensor.",
+      "body": [
+        "Wrap the image and mask with their semantic tv_tensor types, then pass them through one v2 transform pipeline. Geometric transforms dispatch appropriately: image interpolation can be bilinear while discrete masks preserve class IDs. Photometric transforms should affect the image only.",
+        "Current TorchVision recommends transforms v2 because it supports images, masks, boxes, videos, keypoints, and arbitrary nested structures. Still inspect transformed pairs and add a synthetic landmark test; API-level pairing cannot prove a transformation is anatomically appropriate."
+      ],
+      "code": {
+        "title": "Joint image and mask augmentation",
+        "language": "python",
+        "source": "import torch\nfrom torchvision import tv_tensors\nfrom torchvision.transforms import v2\n\ntransform = v2.Compose([\n    v2.RandomHorizontalFlip(p=0.5),\n    v2.RandomRotation(\n        10,\n        interpolation=v2.InterpolationMode.BILINEAR,\n        fill={tv_tensors.Image: 0, tv_tensors.Mask: 0},\n    ),\n    v2.ToDtype({\n        tv_tensors.Image: torch.float32,\n        tv_tensors.Mask: torch.int64,\n        \"others\": None,\n    }, scale=True),\n])\n\ndef augment_pair(image_uint8, mask_uint8):\n    image = tv_tensors.Image(image_uint8)\n    mask = tv_tensors.Mask(mask_uint8)\n    allowed_ids = set(mask.unique().tolist()) | {0}\n    image, mask = transform(image, mask)\n\n    if image.shape[-2:] != mask.shape[-2:]:\n        raise AssertionError(\"image and mask geometry diverged\")\n    if mask.dtype != torch.int64:\n        raise AssertionError(\"mask class IDs must remain integer-valued\")\n    if not set(mask.unique().tolist()).issubset(allowed_ids):\n        raise AssertionError(\"interpolation introduced a new mask class ID\")\n    return image, mask"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Review left-right flips",
+          "body": "A transform can be geometrically consistent yet invalid for a task where orientation carries meaning. Document allowed transforms rather than copying an image-classification recipe."
+        }
+      ]
+    },
+    {
+      "id": "fine-tune-and-checkpoint",
+      "title": "Fine-tune a segmenter with a reproducible boundary",
+      "summary": "A pretrained processor, model head, loss, optimizer, and split together define the experiment.",
+      "body": [
+        "Confirm the processor's rescaling and normalization so the dataset does not apply them twice. Verify label IDs, ignore index, output resolution, and how logits are resized back to the mask shape. Start by overfitting a few reviewed masks before a full pseudo-label run.",
+        "Use AdamW, current AMP APIs where beneficial, and validation overlap for checkpoint selection. Save trusted state_dict checkpoints with model/processor revisions and split release. Reload into reconstructed code with weights_only=True and compare fixed-image logits before continuing."
+      ],
+      "code": {
+        "title": "Checkpoint the fine-tuning state",
+        "language": "python",
+        "source": "import torch\n\ndef save_training_checkpoint(\n    checkpoint_path,\n    model,\n    optimizer,\n    epoch,\n    model_revision,\n    processor_revision,\n    dataset_revision,\n    split_revision,\n    validation_dice,\n):\n    torch.save({\n        \"model\": model.state_dict(),\n        \"optimizer\": optimizer.state_dict(),\n        \"epoch\": int(epoch),\n        \"model_revision\": str(model_revision),\n        \"processor_revision\": str(processor_revision),\n        \"dataset_revision\": str(dataset_revision),\n        \"split_revision\": str(split_revision),\n        \"validation_dice\": float(validation_dice),\n    }, checkpoint_path)"
+      }
+    },
+    {
+      "id": "foundation-model-review",
+      "title": "Evaluate transfer, speed, and limitations together",
+      "summary": "SAM-style masks, DINO-style embeddings, and a fine-tuned segmenter answer different questions and require separate evidence.",
+      "body": [
+        "Embedding models can support retrieval or feature analysis without directly producing a task mask. Promptable segmentation can reduce annotation effort but introduces prompt and selection policy. A fine-tuned semantic model can make repeatable predictions but inherits pseudo-label errors. Compare these roles rather than ranking unlike outputs as one leaderboard.",
+        "For inference, use model.eval() and torch.inference_mode. After eager parity, SDPA and torch.compile may accelerate attention-heavy encoders. Measure first-call cost, warm latency, memory, and overlap because reduced precision or compilation can alter mask boundaries. Record external model licenses and model-card limitations with every published result."
+      ],
+      "code": {
+        "title": "Verify compiled mask logits",
+        "language": "python",
+        "source": "import torch\n\ndef compile_after_parity_check(model, pixel_values):\n    model.eval()\n    compiled_model = torch.compile(model)\n    with torch.inference_mode():\n        eager = model(pixel_values).logits\n        _ = compiled_model(pixel_values).logits  # compile and warm\n        compiled = compiled_model(pixel_values).logits\n    torch.testing.assert_close(compiled, eager, rtol=2e-3, atol=2e-3)\n    return compiled_model"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Paired augmentation",
+      "book": "The notebooks prepare CT images and masks for fine-tuning with explicit dataset logic.",
+      "current": "Use torchvision.transforms.v2 and tv_tensors.Mask for supported 2D pairs",
+      "reason": "The recommended v2 API applies shared random geometry to images and semantic masks while dispatching by input type."
+    },
+    {
+      "topic": "Inference",
+      "book": "Foundation-model examples run forward passes and visualize masks.",
+      "current": "Use model.eval() plus torch.inference_mode()",
+      "reason": "Evaluation mode controls modules such as dropout, while inference mode disables autograd bookkeeping and can reduce overhead."
+    },
+    {
+      "topic": "Attention performance",
+      "book": "External foundation-model packages provide their own encoder implementations.",
+      "current": "Verify eager outputs before SDPA or torch.compile acceleration",
+      "reason": "Current PyTorch can accelerate attention-heavy models, but mask parity, first-call compilation, precision, and graph behavior must be measured."
+    },
+    {
+      "topic": "Generated supervision",
+      "book": "A promptable model helps create image/mask pairs for later fine-tuning.",
+      "current": "Version generated masks as pseudo-labels with complete provenance",
+      "reason": "Model revision, prompt, preprocessing, selection rule, and source identity determine the mask and must remain auditable."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch15--p2ch15_explore_data", "reason": "Revisit candidate-centered CT slices and geometry before introducing external segmentation models."},
+    {"slug": "p2ch15--sandbox", "reason": "Inspect the native segmentation training path and experiment with Dice loss on real batches."},
+    {"slug": "p2ch15--1_segment_example", "reason": "Generate automatic masks on an ordinary image and inspect their structure and overlap."},
+    {"slug": "p2ch15--2_point_prompt", "reason": "Compare point-prompt predictions and visualize the selected point with the resulting masks."},
+    {"slug": "p2ch15--3_segment_ct_slice", "reason": "Apply the prompt pipeline to a normalized CT slice while auditing coordinate conversion."},
+    {"slug": "p2ch15--4_create_dataset", "reason": "Generate image/mask records, metadata, and a Dataset for later fine-tuning."},
+    {"slug": "p2ch15--5_fine_tuning", "reason": "Fine-tune a semantic segmenter and inspect the processor, loss, optimizer, and TensorBoard loop."},
+    {"slug": "p2ch15--6_inference", "reason": "Reload a trained segmenter, resize logits correctly, and compare predictions with masks."},
+    {"slug": "p2ch15--try_sam", "reason": "Contrast another package interface for SAM-style processing and pipeline inference."},
+    {"slug": "p2ch15--dino_model", "reason": "Study image embeddings as a separate foundation-model capability rather than a mask generator."}
+  ],
+  "exercises": [
+    {
+      "title": "Test overlap edge cases",
+      "prompt": "Implement Dice and IoU tests for perfect overlap, disjoint masks, partial overlap, empty target, empty prediction, and both empty. State the reduction and empty-mask policy.",
+      "success": "all expected values are derived by hand and the implementation remains finite with correct gradient behavior for the training loss"
+    },
+    {
+      "title": "Measure prompt sensitivity",
+      "prompt": "Move a point prompt across a grid around at least ten reviewed candidates. Record prompt distance, selected mask, Dice/IoU, and outright failures.",
+      "success": "the report quantifies sensitivity and retains every source identity, transformed coordinate, and model revision"
+    },
+    {
+      "title": "Audit a pseudo-label release",
+      "prompt": "Review a stratified set of generated masks, categorize failure types, apply one versioned filtering rule, and run a tiny fine-tuning comparison before and after filtering.",
+      "success": "the split remains identity-disjoint, provenance is complete, and the conclusion separates mask quality from downstream model quality"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "TorchVision transforms v2", "url": "https://docs.pytorch.org/vision/stable/transforms.html"},
+    {"type": "Official PyTorch", "title": "Getting started with transforms v2", "url": "https://docs.pytorch.org/vision/stable/auto_examples/transforms/plot_transforms_getting_started.html"},
+    {"type": "Official PyTorch", "title": "BCEWithLogitsLoss", "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.BCEWithLogitsLoss.html"},
+    {"type": "Official PyTorch", "title": "TorchVision semantic segmentation models", "url": "https://docs.pytorch.org/vision/stable/models.html#semantic-segmentation"},
+    {"type": "Official PyTorch", "title": "Accelerating Segment Anything", "url": "https://pytorch.org/blog/accelerating-generative-ai/"},
+    {"type": "Primary model reference", "title": "Segment Anything", "url": "https://github.com/facebookresearch/segment-anything"},
+    {"type": "Primary model reference", "title": "DINOv2", "url": "https://github.com/facebookresearch/dinov2"}
+  ]
+}
