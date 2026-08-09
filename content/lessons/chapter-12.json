@@ -1,0 +1,163 @@
+{
+  "chapter": 12,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 180,
+  "outcomes": [
+    "Load a CT series while preserving intensity, origin, spacing, direction, and series identity.",
+    "Convert candidate locations between world coordinates and array indices and verify the transform with round-trip tests.",
+    "Build candidate-centered tensors through a custom Dataset and DataLoader with documented shape and label contracts.",
+    "Validate samples visually and programmatically, then tune loading performance without changing sample meaning."
+  ],
+  "sections": [
+    {
+      "id": "ct-contract",
+      "title": "Treat a CT volume as pixels plus geometry",
+      "summary": "The NumPy array alone cannot locate a candidate expressed in physical coordinates.",
+      "body": [
+        "A CT reader supplies an intensity array and metadata describing where each voxel lies in patient or scanner space. Preserve origin, voxel spacing, direction, and the series UID together. Array axes are commonly ordered differently from physical x, y, z coordinates, so conversions must state both conventions.",
+        "CT values may be clipped or windowed for the learning problem, but retain the original dtype and range long enough to inspect them. Normalization is part of the input contract: write the clipping limits, scaling rule, output dtype, and whether air or padding receives a special value."
+      ],
+      "points": [
+        "Series UID identifies the source scan.",
+        "Origin locates an index-space reference point in world coordinates.",
+        "Spacing gives physical distance between neighboring voxels.",
+        "Direction records axis orientation and must not be silently assumed identity."
+      ],
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Array order is not world order",
+          "body": "Many arrays use index order [z, y, x] while annotations use physical [x, y, z]. Name coordinate components instead of relying on positional intuition."
+        }
+      ]
+    },
+    {
+      "id": "coordinate-roundtrip",
+      "title": "Make coordinate conversion an independently tested function",
+      "summary": "Candidate crops are only useful when their physical centers map to the intended voxels.",
+      "body": [
+        "World-to-index conversion subtracts the origin, applies inverse direction, divides by spacing, and then reorders axes for the array. Rounding policy matters: a continuous center can fall between voxels, while slicing requires integer indices. Keep the floating index available for diagnostics before selecting a crop center.",
+        "Test known points and round trips in both directions. A round trip should recover the original world location within an absolute tolerance stated in millimeters and justified from the transform precision and voxel spacing. Also test negative indices, upper boundaries, anisotropic spacing, and non-identity direction where the source format provides it."
+      ],
+      "code": {
+        "title": "Test rather than trust a conversion",
+        "language": "python",
+        "source": "import torch\n\ndef assert_world_round_trip(geometry, world_xyz, *, atol_mm):\n    \"\"\"Test an injected geometry adapter in physical millimeters.\"\"\"\n    if atol_mm <= 0:\n        raise ValueError(\"atol_mm must be positive\")\n    world = torch.as_tensor(world_xyz, dtype=torch.float64)\n    if world.shape != (3,):\n        raise ValueError(\"world_xyz must contain x, y, z\")\n    continuous_index = torch.as_tensor(\n        geometry.world_to_continuous_index(world.tolist()),\n        dtype=torch.float64,\n    )\n    recovered = torch.as_tensor(\n        geometry.continuous_index_to_world(continuous_index.tolist()),\n        dtype=torch.float64,\n    )\n    torch.testing.assert_close(\n        recovered, world, rtol=0.0, atol=float(atol_mm),\n    )\n    return continuous_index"
+      }
+    },
+    {
+      "id": "candidate-crops",
+      "title": "Crop candidates with explicit boundary behavior",
+      "summary": "A fixed-size tensor simplifies batching only when edge cases follow a documented padding rule.",
+      "body": [
+        "Convert the candidate center to array coordinates, compute half-widths for depth, height, and width, and slice a fixed physical or voxel extent. Candidates near a boundary require clipping plus padding. Do not allow Python negative slices to wrap around to the opposite side of the volume.",
+        "Return the crop, label, series UID, center, and any metadata needed for later error analysis. Assert the final crop shape for every item. If crops are defined in voxels, note that physical coverage changes with spacing; if defined in millimeters, resampling becomes part of the contract."
+      ],
+      "code": {
+        "title": "Validate every returned sample",
+        "language": "python",
+        "source": "import math\nfrom numbers import Integral\nimport torch\n\ndef validate_sample(sample, expected_shape):\n    \"\"\"Raise explicit errors so checks survive `python -O`.\"\"\"\n    image = sample[\"image\"]\n    if tuple(image.shape) != tuple(expected_shape):\n        raise ValueError(\n            f\"crop shape {tuple(image.shape)} != {tuple(expected_shape)}\"\n        )\n    if image.dtype != torch.float32:\n        raise TypeError(f\"expected float32 image, got {image.dtype}\")\n    if not bool(torch.isfinite(image).all()):\n        raise ValueError(\"image contains a non-finite value\")\n\n    label = sample[\"label\"]\n    if isinstance(label, bool) or not isinstance(label, Integral) or label not in (0, 1):\n        raise ValueError(f\"invalid binary label: {label!r}\")\n    series_uid = sample[\"series_uid\"]\n    if not isinstance(series_uid, str) or not series_uid:\n        raise ValueError(\"series_uid must be a non-empty string\")\n    center = sample[\"center_xyz\"]\n    if len(center) != 3 or not all(math.isfinite(float(x)) for x in center):\n        raise ValueError(\"center_xyz must contain three finite values\")\n    return sample"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Keep provenance in the batch",
+          "body": "Identifiers and centers do not enter the network, but they are essential when a false positive must be traced back to the source volume."
+        }
+      ]
+    },
+    {
+      "id": "dataset-boundary",
+      "title": "Separate indexing from loading and transformation",
+      "summary": "A map-style Dataset should make one index resolve to one reproducible sample contract.",
+      "body": [
+        "Build an immutable candidate list during initialization and keep expensive volume decoding lazy. __len__ reports the candidate count; __getitem__ resolves one candidate, loads or retrieves its volume, crops it, normalizes it, and returns tensors plus metadata. Repeated logic belongs in ordinary functions that can be tested without a DataLoader worker.",
+        "Decide whether a cache stores decoded source volumes or derived crops. A process-local read-through cache is often simpler than sharing mutable state across workers. Include source and preprocessing versions in persistent cache keys so stale arrays cannot be mistaken for current data."
+      ],
+      "code": {
+        "title": "A typed sample boundary",
+        "language": "python",
+        "source": "from collections.abc import Callable, Sequence\nfrom typing import Any, TypedDict\nimport torch\nfrom torch.utils import data\n\nclass CandidateSample(TypedDict):\n    image: torch.Tensor\n    label: int\n    series_uid: str\n    center_xyz: tuple[float, float, float]\n\nclass CandidateDataset(data.Dataset):\n    def __init__(\n        self,\n        candidates: Sequence[Any],\n        load_candidate: Callable[[Any], CandidateSample],\n        validate: Callable[[CandidateSample, tuple[int, ...]], CandidateSample],\n        crop_shape: tuple[int, ...],\n    ):\n        self.candidates = tuple(candidates)\n        self.load_candidate = load_candidate\n        self.validate = validate\n        self.crop_shape = tuple(crop_shape)\n\n    def __len__(self):\n        return len(self.candidates)\n\n    def __getitem__(self, index) -> CandidateSample:\n        sample = self.load_candidate(self.candidates[index])\n        return self.validate(sample, self.crop_shape)"
+      }
+    },
+    {
+      "id": "dataloader-behavior",
+      "title": "Tune DataLoader only after sample correctness",
+      "summary": "Workers, prefetching, pinned memory, and persistent processes change throughput and lifecycle, not dataset semantics.",
+      "body": [
+        "Start with num_workers=0 because errors have direct tracebacks and all state lives in one process. Once samples are correct, measure additional workers, CUDA pinned memory, prefetch_factor, and persistent_workers. More workers can slow storage-bound or cache-heavy workloads. Pair pin_memory=True with non_blocking=True when moving a batch to CUDA, and measure whether transfer is actually the bottleneck.",
+        "For reproducible random behavior, seed PyTorch, Python, and NumPy code used inside each worker and pass a seeded torch.Generator to DataLoader. On Windows and macOS, keep worker functions at module scope and create or iterate a multi-worker loader only below an if __name__ == '__main__' guard. In an interactive notebook, use num_workers=0 until Dataset and worker code lives in an importable module. Do not expect exact results to remain identical across PyTorch releases or different platforms."
+      ],
+      "code": {
+        "title": "Seed worker-local libraries",
+        "language": "python",
+        "source": "import random\nimport numpy as np\nimport torch\nfrom torch.utils import data\n\ndef seed_worker(worker_id):\n    worker_seed = torch.initial_seed() % 2**32\n    random.seed(worker_seed)\n    np.random.seed(worker_seed)\n\ndef make_loader(dataset, *, seed=17, num_workers=0):\n    \"\"\"Build a loader; call under a main guard when workers > 0.\"\"\"\n    generator = torch.Generator().manual_seed(seed)\n    return data.DataLoader(\n        dataset,\n        batch_size=8,\n        shuffle=True,\n        num_workers=num_workers,\n        worker_init_fn=seed_worker,\n        generator=generator,\n        pin_memory=torch.cuda.is_available(),\n        persistent_workers=num_workers > 0,\n    )"
+      }
+    },
+    {
+      "id": "visual-data-review",
+      "title": "Inspect data in physical and tensor context",
+      "summary": "Plots catch coordinate, orientation, clipping, and label errors that aggregate statistics cannot localize.",
+      "body": [
+        "Display orthogonal slices through positive and negative candidates, mark the intended center, and include series identity and intensity range in the caption. Sample large, small, central, boundary, and unusual examples rather than only attractive positives.",
+        "Pair visual review with automated summaries: class counts, missing series, crop extrema, non-finite values, duplicated identities, and per-split prevalence. Save the report with the split and preprocessing revision so later model changes can be separated from data changes."
+      ],
+      "points": [
+        "Review raw and normalized views side by side.",
+        "Confirm left/right and superior/inferior orientation where relevant.",
+        "Plot candidate center in more than one plane.",
+        "Trace every suspicious crop back to its source metadata."
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Data loading",
+      "book": "The notebooks introduce a custom Dataset and cache around CT series and candidates.",
+      "current": "Measure num_workers, CUDA pinning, prefetch_factor, and persistent_workers",
+      "reason": "PyTorch 2.13 exposes these DataLoader controls, but their benefit depends on storage, transforms, CUDA transfer, platform process behavior, and cache design."
+    },
+    {
+      "topic": "Reproducible workers",
+      "book": "Exploration often starts with one interactive process.",
+      "current": "Seed worker-local libraries and pass a torch.Generator",
+      "reason": "When num_workers is positive, each worker has its own process state. Explicit seeding keeps stochastic crops and shuffling reproducible within the documented environment."
+    },
+    {
+      "topic": "Sample structure",
+      "book": "Tuples compactly return candidate tensor, label, and identifying metadata.",
+      "current": "Use a named mapping or typed record at the project boundary",
+      "reason": "Names reduce axis and field-order mistakes as later chapters add masks, prompts, and provenance. DataLoader can collate ordinary nested mappings."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch12_explore_data", "reason": "Explore series, candidates, CT slices, and intensity behavior before creating a training loader."},
+    {"slug": "p2ch12--sandbox", "reason": "Exercise getCt, LunaDataset, positive-sample discovery, and individual candidate inspection interactively."}
+  ],
+  "exercises": [
+    {
+      "title": "Test coordinate round trips",
+      "prompt": "Create tests for center, boundary, anisotropic-spacing, and non-identity-direction points. Convert world to continuous index and back, then justify an absolute tolerance from the metadata.",
+      "success": "all valid points round trip within the stated tolerance and deliberately swapped axis order fails at least one test"
+    },
+    {
+      "title": "Run a sample-contract audit",
+      "prompt": "Validate shape, dtype, finite range, label, identity, center, and split membership over at least 100 stratified candidates and save a machine-readable failure report.",
+      "success": "the audit covers positive, negative, edge, and multiple-series samples and every failure can be traced to a source identity"
+    },
+    {
+      "title": "Benchmark loader configurations",
+      "prompt": "Measure examples per second for num_workers 0, 2, and 4, then test pin_memory and persistent_workers where applicable. Exclude initial cache population or report it separately.",
+      "success": "the selected configuration is supported by repeated measurements and returns identical sample identities and tensor contracts"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "Datasets and DataLoaders", "url": "https://docs.pytorch.org/tutorials/beginner/basics/data_tutorial.html"},
+    {"type": "Official PyTorch", "title": "torch.utils.data", "url": "https://docs.pytorch.org/docs/2.13/data.html"},
+    {"type": "Official PyTorch", "title": "Reproducibility", "url": "https://docs.pytorch.org/docs/2.13/notes/randomness.html"},
+    {"type": "Primary imaging API", "title": "SimpleITK Image geometry and transforms", "url": "https://simpleitk.org/doxygen/latest/html/classitk_1_1simple_1_1Image.html"},
+    {"type": "Primary dataset", "title": "LUNA16 evaluation and world-coordinate contract", "url": "https://luna16.grand-challenge.org/Evaluation/"}
+  ]
+}
