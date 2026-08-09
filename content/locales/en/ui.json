@@ -110,5 +110,7 @@
   "notFoundEyebrow": "404 · Lost tensor",
   "notFoundTitle": "This route has no shape.",
   "notFoundBody": "The page may have moved. Return to the learning path and continue from a known dimension.",
-  "backToAtlas": "Back to the Atlas"
+  "backToAtlas": "Back to the Atlas",
+  "diagram": "Concept diagram",
+  "repeatCycle": "repeat with the next batch"
 }

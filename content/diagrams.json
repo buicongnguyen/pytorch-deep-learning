@@ -1,0 +1,183 @@
+{
+  "diagrams": [
+    {
+      "chapter": 1,
+      "section": "learning-system",
+      "kind": "cycle",
+      "title": "One training step is a feedback loop",
+      "caption": "The prediction moves forward; information about the error moves backward; the next step uses updated parameters.",
+      "stages": [
+        { "label": "Batch", "detail": "features x and targets y" },
+        { "label": "Model", "detail": "prediction = model(x)" },
+        { "label": "Loss", "detail": "one scalar error" },
+        { "label": "Backward", "detail": "parameter gradients" },
+        { "label": "Optimizer", "detail": "small parameter update" }
+      ]
+    },
+    {
+      "chapter": 3,
+      "section": "broadcasting",
+      "kind": "flow",
+      "title": "Broadcasting aligns dimensions from the right",
+      "caption": "A dimension can match exactly or have size 1. The size-1 values are reused virtually; PyTorch does not tile the tensor in memory.",
+      "stages": [
+        { "label": "Image batch", "detail": "N × C × H × W" },
+        { "label": "Channel weights", "detail": "1 × C × 1 × 1" },
+        { "label": "Align axes", "detail": "N↔1, C↔C, H↔1, W↔1" },
+        { "label": "Result", "detail": "N × C × H × W" }
+      ]
+    },
+    {
+      "chapter": 4,
+      "section": "representation-pipeline",
+      "kind": "flow",
+      "title": "Raw files become tensor contracts in stages",
+      "caption": "Decoding, layout conversion, numeric scaling, and normalization are separate transformations. Keeping them separate makes mistakes observable.",
+      "stages": [
+        { "label": "Raw source", "detail": "image, CSV, audio, text" },
+        { "label": "Decode", "detail": "domain values in memory" },
+        { "label": "Layout", "detail": "named meaning for every axis" },
+        { "label": "Scale", "detail": "dtype and numeric range" },
+        { "label": "Normalize", "detail": "training-only statistics" }
+      ]
+    },
+    {
+      "chapter": 5,
+      "section": "optimizer-loop",
+      "kind": "cycle",
+      "title": "The optimizer owns the update, not the experiment",
+      "caption": "The loop must still create predictions, calculate loss, clear gradients, and invoke backward in the correct order.",
+      "stages": [
+        { "label": "zero_grad", "detail": "discard gradients from the previous step" },
+        { "label": "Forward", "detail": "calculate current predictions" },
+        { "label": "Loss", "detail": "compare predictions with targets" },
+        { "label": "backward", "detail": "populate parameter .grad" },
+        { "label": "step", "detail": "update the parameters" }
+      ]
+    },
+    {
+      "chapter": 7,
+      "section": "train-validate",
+      "kind": "split",
+      "title": "Training, validation, and test answer different questions",
+      "caption": "Only the training partition updates parameters. Validation selects choices; the reserved test split estimates the final system once.",
+      "stages": [
+        { "label": "Training partition", "detail": "augmentation + gradient updates" },
+        { "label": "Validation partition", "detail": "deterministic transforms + model selection" },
+        { "label": "Best state", "detail": "copied checkpoint selected by validation" },
+        { "label": "Test split", "detail": "one final evaluation after selection" }
+      ]
+    },
+    {
+      "chapter": 8,
+      "section": "adaptive-classifier",
+      "kind": "flow",
+      "title": "A CNN turns space into channels, then logits",
+      "caption": "Convolution and pooling shrink spatial axes while learned channels grow. Adaptive pooling removes the final resolution dependency before the classifier.",
+      "stages": [
+        { "label": "Input", "detail": "N × 3 × H × W" },
+        { "label": "Feature blocks", "detail": "more channels, smaller H × W" },
+        { "label": "Adaptive pool", "detail": "N × C × 1 × 1" },
+        { "label": "Flatten", "detail": "N × C" },
+        { "label": "Linear head", "detail": "N × classes logits" }
+      ]
+    },
+    {
+      "chapter": 9,
+      "section": "causal-attention",
+      "kind": "flow",
+      "title": "Attention routes information from values",
+      "caption": "Queries and keys produce compatibility scores. The causal mask removes future positions before softmax; the resulting weights blend values.",
+      "stages": [
+        { "label": "Q × Kᵀ", "detail": "token-to-token scores" },
+        { "label": "Scale", "detail": "divide by √head_dim" },
+        { "label": "Causal mask", "detail": "future scores cannot contribute" },
+        { "label": "Softmax", "detail": "row-wise attention weights" },
+        { "label": "Weights × V", "detail": "context for each token" }
+      ]
+    },
+    {
+      "chapter": 10,
+      "section": "forward-process",
+      "kind": "two-way",
+      "title": "Diffusion learns to reverse a known corruption process",
+      "caption": "The forward schedule adds measured noise during training. The denoiser predicts the noise or a related target so sampling can move toward data one step at a time.",
+      "stages": [
+        { "label": "Clean sample x₀", "detail": "training data" },
+        { "label": "Forward q", "detail": "add scheduled Gaussian noise" },
+        { "label": "Noisy sample xₜ", "detail": "condition on timestep t" },
+        { "label": "Denoiser εθ", "detail": "predict the training target" },
+        { "label": "Reverse step", "detail": "estimate a less noisy sample" }
+      ]
+    },
+    {
+      "chapter": 11,
+      "section": "pipeline-map",
+      "kind": "flow",
+      "title": "Keep patient identity and coordinates through the CT pipeline",
+      "caption": "Every derived artifact must retain enough provenance to reconnect a crop or prediction to the original scan and patient-level split.",
+      "stages": [
+        { "label": "DICOM / MHD series", "detail": "patient and series identifiers" },
+        { "label": "CT volume", "detail": "origin, spacing, direction" },
+        { "label": "Candidates", "detail": "world coordinates + source series" },
+        { "label": "Crops", "detail": "voxel bounds + preprocessing revision" },
+        { "label": "Prediction", "detail": "checkpoint + split + source identity" }
+      ]
+    },
+    {
+      "chapter": 12,
+      "section": "coordinate-roundtrip",
+      "kind": "two-way",
+      "title": "World and voxel coordinates are different spaces",
+      "caption": "Origin, spacing, and direction transform physical millimeters into continuous voxel indices. A round trip is the fastest geometry sanity check.",
+      "stages": [
+        { "label": "World point", "detail": "x, y, z in millimeters" },
+        { "label": "Subtract origin", "detail": "position relative to image" },
+        { "label": "Apply direction⁻¹", "detail": "resolve physical axes" },
+        { "label": "Divide by spacing", "detail": "continuous voxel index" },
+        { "label": "Round trip", "detail": "convert back and compare in mm" }
+      ]
+    },
+    {
+      "chapter": 15,
+      "section": "segmentation-contract",
+      "kind": "flow",
+      "title": "Segmentation preserves a spatial prediction contract",
+      "caption": "The model emits one logit per output pixel or voxel. Target rank, channel convention, interpolation mode, and loss must agree.",
+      "stages": [
+        { "label": "Image / volume", "detail": "B × C × spatial axes" },
+        { "label": "Segmenter", "detail": "spatial encoder-decoder" },
+        { "label": "Logits", "detail": "B × classes × spatial axes" },
+        { "label": "Mask target", "detail": "class IDs or binary channel" },
+        { "label": "Loss + metrics", "detail": "pixelwise error and overlap" }
+      ]
+    },
+    {
+      "chapter": 16,
+      "section": "process-model",
+      "kind": "parallel",
+      "title": "DDP replicates the model and partitions the data",
+      "caption": "Each rank executes its own forward and backward pass. Gradient collectives make every replica apply the same synchronized update.",
+      "stages": [
+        { "label": "Rank 0", "detail": "model replica + batch shard 0" },
+        { "label": "Rank 1", "detail": "model replica + batch shard 1" },
+        { "label": "All-reduce", "detail": "combine matching parameter gradients" },
+        { "label": "Optimizer step", "detail": "replicas remain synchronized" }
+      ]
+    },
+    {
+      "chapter": 17,
+      "section": "export-full-graph",
+      "kind": "flow",
+      "title": "Deployment narrows Python into an explicit artifact",
+      "caption": "Each boundary trades flexibility for a clearer runtime contract. Validate numerical parity and supported input shapes at every transition.",
+      "stages": [
+        { "label": "Eager module", "detail": "Python + parameters" },
+        { "label": "Exported program", "detail": "captured tensor graph + guards" },
+        { "label": "Compiled / ONNX artifact", "detail": "target runtime representation" },
+        { "label": "Runtime adapter", "detail": "device transfer + preprocessing" },
+        { "label": "Service output", "detail": "validated task-specific result" }
+      ]
+    }
+  ]
+}

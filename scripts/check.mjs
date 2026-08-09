@@ -1,6 +1,7 @@
 import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { loadChapterOverlays, loadUi } from "./lib/i18n.mjs";
+import { loadChapterOverlays, loadDiagrams, loadSyntax, loadUi } from "./lib/i18n.mjs";
+import { addPurposeComment, detectSyntaxKeys, syntaxRules, teachingCommentRules } from "./lib/code-teaching.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const dist = path.join(root, "dist");
@@ -12,6 +13,10 @@ const viOverlays = await loadChapterOverlays(root, "vi");
 const enUi = await loadUi(root, "en");
 const viUi = await loadUi(root, "vi");
 const viTerminology = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "terminology.json"), "utf8"));
+const enSyntax = await loadSyntax(root, "en");
+const viSyntax = await loadSyntax(root, "vi");
+const canonicalDiagrams = await loadDiagrams(root, "en");
+const viDiagrams = await loadDiagrams(root, "vi");
 const sourceOnly = process.argv.includes("--source-only");
 const failures = [];
 const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810, locales: 2 };
@@ -103,7 +108,64 @@ if (!sameSet(canonicalReferenceTypes, Object.keys(viTerminology.referenceTypes |
 for (const [key, value] of Object.entries(viTerminology.concepts || {})) requireText(value, `Vietnamese concept ${key}`);
 for (const [key, value] of Object.entries(viTerminology.referenceTypes || {})) requireText(value, `Vietnamese reference type ${key}`);
 
+const syntaxKeys = new Set(syntaxRules.map((rule) => rule.key));
+if (!sameSet(syntaxKeys, Object.keys(enSyntax.entries || {}))) failures.push("English syntax guide must cover every detection rule exactly");
+if (!sameSet(syntaxKeys, Object.keys(viSyntax.entries || {}))) failures.push("Vietnamese syntax guide must cover every detection rule exactly");
+for (const field of ["heading", "intro", "officialReference", "purposeLabel"]) {
+  requireText(enSyntax[field], `English syntax ${field}`);
+  requireTranslation(enSyntax[field], viSyntax[field], `Vietnamese syntax ${field}`);
+}
+for (const key of syntaxKeys) {
+  for (const field of ["title", "body"]) {
+    requireText(enSyntax.entries?.[key]?.[field], `English syntax ${key} ${field}`);
+    requireTranslation(enSyntax.entries?.[key]?.[field], viSyntax.entries?.[key]?.[field], `Vietnamese syntax ${key} ${field}`);
+  }
+}
+if (!sameSet(teachingCommentRules.map((rule) => rule.key), Object.keys(enSyntax.comments || {}))) failures.push("English inline teaching comments must cover every insertion rule exactly");
+if (!sameSet(teachingCommentRules.map((rule) => rule.key), Object.keys(viSyntax.comments || {}))) failures.push("Vietnamese inline teaching comments must cover every insertion rule exactly");
+for (const rule of teachingCommentRules) {
+  requireText(enSyntax.comments?.[rule.key], `English inline comment ${rule.key}`);
+  requireTranslation(enSyntax.comments?.[rule.key], viSyntax.comments?.[rule.key], `Vietnamese inline comment ${rule.key}`);
+}
+for (const rule of syntaxRules) {
+  try {
+    const url = new URL(rule.url);
+    if (url.protocol !== "https:" || !["docs.python.org", "docs.pytorch.org"].includes(url.hostname)) failures.push(`Syntax rule ${rule.key} must link to official Python or PyTorch HTTPS documentation`);
+  } catch { failures.push(`Syntax rule ${rule.key} has an invalid reference URL`); }
+}
+
+if (canonicalDiagrams.diagrams?.length !== 13) failures.push(`Expected 13 targeted concept diagrams, found ${canonicalDiagrams.diagrams?.length ?? "none"}`);
+requireArrayParity(canonicalDiagrams.diagrams || [], viDiagrams.diagrams || [], "Vietnamese diagrams");
+const diagramKeys = new Set();
+for (const diagram of canonicalDiagrams.diagrams || []) {
+  const key = `${diagram.chapter}.${diagram.section}`;
+  if (diagramKeys.has(key)) failures.push(`Duplicate diagram ${key}`);
+  diagramKeys.add(key);
+  const lesson = lessons.find((item) => item.chapter === diagram.chapter);
+  if (!lesson?.sections.some((section) => section.id === diagram.section)) failures.push(`Diagram ${key} targets an unknown lesson section`);
+  if (!/^(?:flow|cycle|split|two-way|parallel)$/.test(diagram.kind || "")) failures.push(`Diagram ${key} has unsupported kind ${diagram.kind}`);
+  requireText(diagram.title, `Diagram ${key} title`);
+  requireText(diagram.caption, `Diagram ${key} caption`);
+  if (!Array.isArray(diagram.stages) || diagram.stages.length < 3 || diagram.stages.length > 6) failures.push(`Diagram ${key} must contain 3–6 stages`);
+  const translated = viDiagrams.diagrams?.find((item) => item.chapter === diagram.chapter && item.section === diagram.section);
+  if (!translated) { failures.push(`Vietnamese diagram ${key} is missing`); continue; }
+  if ("kind" in translated) failures.push(`Vietnamese diagram ${key} must not duplicate invariant kind`);
+  requireTranslation(diagram.title, translated.title, `Vietnamese diagram ${key} title`);
+  requireTranslation(diagram.caption, translated.caption, `Vietnamese diagram ${key} caption`);
+  requireArrayParity(diagram.stages, translated.stages, `Vietnamese diagram ${key} stages`);
+  for (const [index, stage] of diagram.stages.entries()) {
+    requireTranslation(stage.label, translated.stages?.[index]?.label, `Vietnamese diagram ${key} stage ${index + 1} label`);
+    if (/[A-Za-z]{2,}/.test(stage.detail)) {
+      requireTranslation(stage.detail, translated.stages?.[index]?.detail, `Vietnamese diagram ${key} stage ${index + 1} detail`);
+    } else if (stage.detail !== translated.stages?.[index]?.detail) {
+      failures.push(`Vietnamese diagram ${key} stage ${index + 1}: symbolic tensor notation must remain exact`);
+    }
+  }
+}
+
 const reservedSectionIds = new Set(["learning-outcomes", "version-review", "guided-notebooks", "exercises", "references"]);
+let lessonCodeBlocks = 0;
+const teachingRuleUsage = new Map(teachingCommentRules.map((rule) => [rule.key, 0]));
 for (const lesson of lessons) {
   const prefix = `Chapter ${lesson.chapter}`;
   if (!catalog.chapters.some((chapter) => chapter.number === lesson.chapter)) failures.push(`${prefix}: unknown chapter`);
@@ -117,6 +179,17 @@ for (const lesson of lessons) {
     if (!section.id || !section.title || !section.summary || !Array.isArray(section.body) || !section.body.length) failures.push(`${prefix}: incomplete section ${section.id || "(missing id)"}`);
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(section.id || "") || reservedSectionIds.has(section.id)) failures.push(`${prefix}: unsafe or reserved section ID ${section.id}`);
     if (section.code && (!section.code.title || !section.code.language || !section.code.source)) failures.push(`${prefix}: incomplete code block in ${section.id}`);
+    if (section.code) {
+      lessonCodeBlocks += 1;
+      const keys = detectSyntaxKeys(section.code.source);
+      if (!keys.length || keys.some((key) => !syntaxKeys.has(key))) failures.push(`${prefix}: code block ${section.id} lacks a valid syntax guide`);
+      const annotated = addPurposeComment(section.code.source, section.summary, section.code.language, enSyntax.purposeLabel, enSyntax.comments);
+      if (section.code.language === "python" && !annotated.startsWith("# Purpose:")) failures.push(`${prefix}: code block ${section.id} lacks its purpose comment`);
+      for (const rule of teachingCommentRules) {
+        const matches = section.code.source.split("\n").filter((line) => rule.test.test(line)).length;
+        if (matches) teachingRuleUsage.set(rule.key, teachingRuleUsage.get(rule.key) + matches);
+      }
+    }
     const pythonSource = section.code?.language === "python" ? section.code.source : "";
     const pythonBody = pythonSource.replace(/^\s*(?:from\s+torch(?:\.[A-Za-z_][\w.]*)?\s+import\s+.+|import\s+torch\.[A-Za-z_][\w.]*(?:\s+as\s+[A-Za-z_]\w*)?)\s*$/gm, "");
     if (pythonSource && /(?:\.data\b|pretrained\s*=\s*True|torch\.cuda\.amp|torch\.jit\.)/.test(pythonBody)) failures.push(`${prefix}: deprecated API in current Python example ${section.id}`);
@@ -144,6 +217,8 @@ for (const lesson of lessons) {
     if (mapping.status === "historical" && !mapping.runtime) failures.push(`${prefix}: historical notebook ${mapping.slug} needs a runtime note`);
   }
 }
+if (lessonCodeBlocks !== 94) failures.push(`Expected 94 lesson code blocks with teaching guides, found ${lessonCodeBlocks}`);
+for (const [key, count] of teachingRuleUsage) if (!count) failures.push(`Inline teaching-comment rule ${key} is not exercised by any lesson example`);
 
 if (viOverlays.length !== 17) failures.push(`Expected 17 Vietnamese chapter overlays, found ${viOverlays.length}`);
 const overlayChapters = viOverlays.map((overlay) => overlay.chapter?.number).sort((a, b) => a - b);
@@ -244,6 +319,13 @@ for (const locale of ["en", "vi"]) {
     try {
       const html = await readFile(file, "utf8");
       validateLocalizedHead(html, locale, `chapters/${String(chapter.number).padStart(2, "0")}/`, `${locale} Chapter ${chapter.number}`);
+      const lesson = lessons.find((item) => item.chapter === chapter.number);
+      const expectedGuides = lesson.sections.filter((section) => section.code).length;
+      if ((html.match(/class="syntax-guide"/g) || []).length !== expectedGuides) failures.push(`${locale} Chapter ${chapter.number}: expected ${expectedGuides} rendered syntax guides`);
+      const purposeMarker = locale === "en" ? "# Purpose:" : "# Mục đích:";
+      if ((html.match(new RegExp(purposeMarker, "g")) || []).length !== expectedGuides) failures.push(`${locale} Chapter ${chapter.number}: localized purpose comments are missing or incorrect`);
+      const expectedDiagrams = canonicalDiagrams.diagrams.filter((diagram) => diagram.chapter === chapter.number).length;
+      if ((html.match(/class="concept-diagram /g) || []).length !== expectedDiagrams) failures.push(`${locale} Chapter ${chapter.number}: expected ${expectedDiagrams} rendered concept diagrams`);
     } catch { failures.push(`Missing ${locale} chapter ${chapter.number} page`); }
   }
   for (const notebook of catalog.notebooks) {

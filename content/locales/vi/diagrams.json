@@ -1,0 +1,157 @@
+{
+  "diagrams": [
+    {
+      "chapter": 1, "section": "learning-system",
+      "title": "Một bước huấn luyện là vòng phản hồi",
+      "caption": "Dự đoán đi xuôi; thông tin về sai số đi ngược; bước kế tiếp dùng tham số đã cập nhật.",
+      "stages": [
+        { "label": "Batch", "detail": "đặc trưng x và mục tiêu y" },
+        { "label": "Mô hình", "detail": "prediction = model(x)" },
+        { "label": "Mất mát", "detail": "một sai số scalar" },
+        { "label": "Lan truyền ngược", "detail": "gradient tham số" },
+        { "label": "Optimizer", "detail": "cập nhật tham số nhỏ" }
+      ]
+    },
+    {
+      "chapter": 3, "section": "broadcasting",
+      "title": "Broadcasting căn các chiều từ bên phải",
+      "caption": "Một chiều phải khớp hoàn toàn hoặc có kích thước 1. Giá trị kích thước 1 được tái sử dụng ảo; PyTorch không lặp tensor trong bộ nhớ.",
+      "stages": [
+        { "label": "Batch ảnh", "detail": "N × C × H × W" },
+        { "label": "Trọng số kênh", "detail": "1 × C × 1 × 1" },
+        { "label": "Căn các trục", "detail": "N↔1, C↔C, H↔1, W↔1" },
+        { "label": "Kết quả", "detail": "N × C × H × W" }
+      ]
+    },
+    {
+      "chapter": 4, "section": "representation-pipeline",
+      "title": "Tệp thô trở thành hợp đồng tensor qua từng giai đoạn",
+      "caption": "Giải mã, đổi layout, scale số và chuẩn hóa là các biến đổi riêng. Tách chúng ra giúp quan sát được lỗi.",
+      "stages": [
+        { "label": "Nguồn thô", "detail": "ảnh, CSV, âm thanh, văn bản" },
+        { "label": "Giải mã", "detail": "giá trị miền dữ liệu trong bộ nhớ" },
+        { "label": "Layout", "detail": "ý nghĩa xác định cho từng trục" },
+        { "label": "Scale", "detail": "dtype và miền giá trị" },
+        { "label": "Chuẩn hóa", "detail": "thống kê chỉ từ tập huấn luyện" }
+      ]
+    },
+    {
+      "chapter": 5, "section": "optimizer-loop",
+      "title": "Optimizer sở hữu bước cập nhật, không sở hữu thí nghiệm",
+      "caption": "Vòng lặp vẫn phải tạo dự đoán, tính mất mát, xóa gradient và gọi backward theo đúng thứ tự.",
+      "stages": [
+        { "label": "zero_grad", "detail": "bỏ gradient của bước trước" },
+        { "label": "Lượt truyền xuôi", "detail": "tính dự đoán hiện tại" },
+        { "label": "Mất mát", "detail": "so sánh dự đoán với mục tiêu" },
+        { "label": "backward", "detail": "điền trường .grad của tham số" },
+        { "label": "step", "detail": "cập nhật tham số" }
+      ]
+    },
+    {
+      "chapter": 7, "section": "train-validate",
+      "title": "Huấn luyện, validation và test trả lời các câu hỏi khác nhau",
+      "caption": "Chỉ phân vùng huấn luyện cập nhật tham số. Validation chọn phương án; tập test được giữ riêng chỉ ước lượng hệ thống cuối cùng một lần.",
+      "stages": [
+        { "label": "Phân vùng huấn luyện", "detail": "augmentation + cập nhật gradient" },
+        { "label": "Phân vùng validation", "detail": "biến đổi xác định + chọn mô hình" },
+        { "label": "Trạng thái tốt nhất", "detail": "checkpoint được sao chép theo validation" },
+        { "label": "Tập test", "detail": "một đánh giá cuối sau khi lựa chọn" }
+      ]
+    },
+    {
+      "chapter": 8, "section": "adaptive-classifier",
+      "title": "CNN biến không gian thành kênh rồi thành logits",
+      "caption": "Convolution và pooling thu nhỏ các trục không gian trong khi số kênh học được tăng lên. Adaptive pooling loại bỏ phụ thuộc độ phân giải cuối trước classifier.",
+      "stages": [
+        { "label": "Đầu vào", "detail": "N × 3 × H × W" },
+        { "label": "Khối đặc trưng", "detail": "nhiều kênh hơn, H × W nhỏ hơn" },
+        { "label": "Adaptive pool", "detail": "N × C × 1 × 1" },
+        { "label": "Flatten", "detail": "N × C" },
+        { "label": "Đầu Linear", "detail": "logits N × số lớp" }
+      ]
+    },
+    {
+      "chapter": 9, "section": "causal-attention",
+      "title": "Attention định tuyến thông tin từ value",
+      "caption": "Query và key tạo điểm tương thích. Causal mask loại vị trí tương lai trước softmax; trọng số thu được dùng để trộn value.",
+      "stages": [
+        { "label": "Q × Kᵀ", "detail": "điểm giữa từng cặp token" },
+        { "label": "Scale", "detail": "chia cho √head_dim" },
+        { "label": "Causal mask", "detail": "điểm tương lai không thể đóng góp" },
+        { "label": "Softmax", "detail": "trọng số attention theo hàng" },
+        { "label": "Trọng số × V", "detail": "ngữ cảnh cho từng token" }
+      ]
+    },
+    {
+      "chapter": 10, "section": "forward-process",
+      "title": "Diffusion học cách đảo ngược một quá trình làm nhiễu đã biết",
+      "caption": "Lịch xuôi thêm lượng nhiễu đo được khi huấn luyện. Denoiser dự đoán nhiễu hoặc mục tiêu liên quan để sampling tiến dần về dữ liệu.",
+      "stages": [
+        { "label": "Mẫu sạch x₀", "detail": "dữ liệu huấn luyện" },
+        { "label": "Chiều xuôi q", "detail": "thêm nhiễu Gaussian theo lịch" },
+        { "label": "Mẫu nhiễu xₜ", "detail": "điều kiện theo timestep t" },
+        { "label": "Denoiser εθ", "detail": "dự đoán mục tiêu huấn luyện" },
+        { "label": "Bước đảo", "detail": "ước lượng mẫu ít nhiễu hơn" }
+      ]
+    },
+    {
+      "chapter": 11, "section": "pipeline-map",
+      "title": "Giữ định danh bệnh nhân và tọa độ xuyên suốt quy trình CT",
+      "caption": "Mỗi artifact dẫn xuất phải giữ đủ provenance để nối crop hoặc dự đoán về scan gốc và phép chia theo bệnh nhân.",
+      "stages": [
+        { "label": "Series DICOM / MHD", "detail": "định danh bệnh nhân và series" },
+        { "label": "Thể tích CT", "detail": "origin, spacing, direction" },
+        { "label": "Ứng viên", "detail": "tọa độ thế giới + series nguồn" },
+        { "label": "Crop", "detail": "biên voxel + phiên bản tiền xử lý" },
+        { "label": "Dự đoán", "detail": "checkpoint + split + định danh nguồn" }
+      ]
+    },
+    {
+      "chapter": 12, "section": "coordinate-roundtrip",
+      "title": "Tọa độ thế giới và voxel là hai không gian khác nhau",
+      "caption": "Origin, spacing và direction biến đổi milimét vật lý thành chỉ mục voxel liên tục. Một phép khứ hồi là kiểm tra hình học nhanh nhất.",
+      "stages": [
+        { "label": "Điểm thế giới", "detail": "x, y, z theo milimét" },
+        { "label": "Trừ origin", "detail": "vị trí tương đối với ảnh" },
+        { "label": "Áp dụng direction⁻¹", "detail": "phân giải các trục vật lý" },
+        { "label": "Chia cho spacing", "detail": "chỉ mục voxel liên tục" },
+        { "label": "Khứ hồi", "detail": "đổi ngược và so sánh theo mm" }
+      ]
+    },
+    {
+      "chapter": 15, "section": "segmentation-contract",
+      "title": "Segmentation giữ nguyên hợp đồng dự đoán không gian",
+      "caption": "Mô hình phát một logit cho mỗi pixel hoặc voxel đầu ra. Rank mục tiêu, quy ước kênh, kiểu nội suy và hàm mất mát phải thống nhất.",
+      "stages": [
+        { "label": "Ảnh / thể tích", "detail": "B × C × các trục không gian" },
+        { "label": "Segmenter", "detail": "encoder-decoder không gian" },
+        { "label": "Logits", "detail": "B × số lớp × các trục không gian" },
+        { "label": "Mask mục tiêu", "detail": "ID lớp hoặc kênh nhị phân" },
+        { "label": "Mất mát + metric", "detail": "sai số từng pixel và độ chồng lấp" }
+      ]
+    },
+    {
+      "chapter": 16, "section": "process-model",
+      "title": "DDP sao chép mô hình và chia dữ liệu",
+      "caption": "Mỗi rank chạy lượt truyền xuôi và ngược riêng. Collective gradient giúp mọi bản sao áp dụng cùng một cập nhật đã đồng bộ.",
+      "stages": [
+        { "label": "Rank 0", "detail": "bản sao mô hình + shard batch 0" },
+        { "label": "Rank 1", "detail": "bản sao mô hình + shard batch 1" },
+        { "label": "All-reduce", "detail": "kết hợp gradient của tham số tương ứng" },
+        { "label": "Bước optimizer", "detail": "các bản sao tiếp tục đồng bộ" }
+      ]
+    },
+    {
+      "chapter": 17, "section": "export-full-graph",
+      "title": "Triển khai thu hẹp Python thành artifact tường minh",
+      "caption": "Mỗi ranh giới đổi tính linh hoạt lấy hợp đồng runtime rõ hơn. Hãy kiểm tra độ tương đồng số và hình dạng đầu vào được hỗ trợ ở mỗi lần chuyển.",
+      "stages": [
+        { "label": "Module eager", "detail": "Python + tham số" },
+        { "label": "Exported program", "detail": "đồ thị tensor đã bắt + guard" },
+        { "label": "Artifact biên dịch / ONNX", "detail": "biểu diễn runtime đích" },
+        { "label": "Bộ chuyển đổi runtime", "detail": "chuyển thiết bị + tiền xử lý" },
+        { "label": "Đầu ra dịch vụ", "detail": "kết quả theo tác vụ đã kiểm tra" }
+      ]
+    }
+  ]
+}

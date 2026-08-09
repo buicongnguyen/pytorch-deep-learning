@@ -13,6 +13,17 @@ export async function loadUi(root, locale) {
   return readJson(path.join(root, "content", "locales", locale, "ui.json"));
 }
 
+export async function loadSyntax(root, locale) {
+  return readJson(path.join(root, "content", "locales", locale, "syntax.json"));
+}
+
+export async function loadDiagrams(root, locale = "en") {
+  const file = locale === "en"
+    ? path.join(root, "content", "diagrams.json")
+    : path.join(root, "content", "locales", locale, "diagrams.json");
+  return readJson(file);
+}
+
 export async function loadChapterOverlays(root, locale) {
   const directory = path.join(root, "content", "locales", locale, "chapters");
   const files = (await readdir(directory)).filter((file) => /^chapter-\d{2}\.json$/.test(file)).sort();
@@ -87,4 +98,19 @@ export function localizeCatalog(sourceCatalog, overlays, terminology = {}) {
 export function localizeLessons(sourceLessons, overlays, terminology = {}) {
   const overlayByChapter = new Map(overlays.map((overlay) => [overlay.lesson.chapter, overlay.lesson]));
   return sourceLessons.map((lesson) => mergeLesson(lesson, overlayByChapter.get(lesson.chapter), terminology));
+}
+
+export function localizeDiagrams(source, overlay) {
+  return {
+    diagrams: source.diagrams.map((diagram) => {
+      const localized = overlay.diagrams.find((item) => item.chapter === diagram.chapter && item.section === diagram.section);
+      if (!localized) throw new Error(`Missing localized diagram for Chapter ${diagram.chapter} ${diagram.section}`);
+      return {
+        ...diagram,
+        title: localized.title,
+        caption: localized.caption,
+        stages: diagram.stages.map((stage, index) => ({ ...stage, ...localized.stages[index] }))
+      };
+    })
+  };
 }

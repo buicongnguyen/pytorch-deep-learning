@@ -8,6 +8,10 @@ The Atlas provides:
 - a seventeen-chapter learning roadmap;
 - original long-form lessons reviewed against PyTorch 2.13;
 - chapter tables of contents, runnable examples, update notes, and exercises;
+- localized comments inside all 94 lesson examples, plus syntax/API guides with
+  official Python and PyTorch references;
+- thirteen responsive concept diagrams for the chapters where flow, shape, or
+  system relationships benefit from a visual explanation;
 - a page for every upstream Jupyter notebook;
 - plain-language explanations for each code cell;
 - complete English and Vietnamese routes for all lessons and notebook readers;
@@ -42,8 +46,9 @@ npm start
 
 The build produces 81 logical pages in each language, two 184-record search
 indexes, reciprocal `hreflang` metadata, and one bilingual sitemap. Validation
-requires all 17 Vietnamese chapter overlays and all 810 localized notebook-cell
-explanations before the site can ship.
+requires all 17 Vietnamese chapter overlays, all 810 localized notebook-cell
+explanations, all 94 code-teaching guides, and 13 bilingual diagrams before the
+site can ship.
 
 To refresh the catalog from a local checkout:
 

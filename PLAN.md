@@ -62,6 +62,24 @@ horizontal overflow.
 - Parallel English and Vietnamese routes with equivalent anchors and search.
 - GitHub Actions deployment to Pages from `main`.
 
+## Code-teaching and visual explanation expansion
+
+Every lesson example now carries a localized purpose comment inside the copied
+Python source. Critical lifecycle calls—training/evaluation mode, gradient
+clearing, backward, optimizer updates, inference contexts, AMP, checkpoint
+I/O, compilation parity, and distributed setup/cleanup—also receive concise
+inline comments where they occur.
+
+A deterministic syntax detector maps less-obvious Python and PyTorch constructs
+to short bilingual explanations and official documentation. The source gate
+requires all 94 code blocks to produce a valid guide and requires every rule,
+translation, comment insertion, and HTTPS reference to remain complete. Thirteen
+targeted concept diagrams cover relationships that prose alone makes harder to
+see: feedback loops, broadcasting, representation pipelines, data splits, CNN
+shape flow, attention, diffusion, CT provenance and geometry, segmentation,
+distributed execution, and export boundaries. Diagrams use semantic HTML and
+stack vertically on narrow screens instead of embedding inaccessible images.
+
 ## Architecture
 
 1. `scripts/import-catalog.mjs` reads a local upstream checkout and records
@@ -113,6 +131,12 @@ repository and enable Pages.
 - The generated audit reports 17 chapters, 63 notebooks, and 810 code cells.
 - The generated audit reports two complete locales and 810 Vietnamese cell
   explanations.
+- All 94 lesson examples render localized purpose comments and syntax/API
+  guides; all inline teaching-comment rules are exercised.
+- Thirteen bilingual, accessible concept diagrams target valid lesson sections
+  and preserve exact stage parity between locales.
+- Every syntax/API guide links to reachable official Python or PyTorch
+  documentation.
 - Root, chapter, notebook, 404, sitemap, robots, and `.nojekyll` files exist.
 - Every notebook points to the pinned upstream commit.
 - Every reviewed lesson has learning outcomes, substantive sections, current

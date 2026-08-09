@@ -110,5 +110,7 @@
   "notFoundEyebrow": "404 · Tensor bị lạc",
   "notFoundTitle": "Đường dẫn này không có hình dạng.",
   "notFoundBody": "Trang có thể đã được chuyển. Hãy quay lại lộ trình học và tiếp tục từ một chiều đã biết.",
-  "backToAtlas": "Quay lại Bản đồ"
+  "backToAtlas": "Quay lại Bản đồ",
+  "diagram": "Sơ đồ khái niệm",
+  "repeatCycle": "lặp lại với batch kế tiếp"
 }

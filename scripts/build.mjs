@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { formatMessage, loadChapterOverlays, loadUi, localizeCatalog, localizeLessons } from "./lib/i18n.mjs";
+import { formatMessage, loadChapterOverlays, loadDiagrams, loadSyntax, loadUi, localizeCatalog, localizeDiagrams, localizeLessons } from "./lib/i18n.mjs";
+import { addPurposeComment, detectSyntaxKeys, syntaxRuleByKey } from "./lib/code-teaching.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const dist = path.join(root, "dist");
@@ -11,6 +12,8 @@ const lessonFiles = (await readdir(lessonDirectory)).filter((file) => file.endsW
 const canonicalLessons = await Promise.all(lessonFiles.map(async (file) => JSON.parse(await readFile(path.join(lessonDirectory, file), "utf8"))));
 const viOverlays = await loadChapterOverlays(root, "vi");
 const viTerminology = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "terminology.json"), "utf8"));
+const canonicalDiagrams = await loadDiagrams(root, "en");
+const viDiagramOverlay = await loadDiagrams(root, "vi");
 const localeConfig = new Map(course.locales.map((locale) => [locale.code, locale]));
 const siteBase = "/pytorch-deep-learning/";
 const siteOrigin = "https://buicongnguyen.github.io";
@@ -19,12 +22,16 @@ const locales = [
   {
     ...localeConfig.get("en"),
     ui: await loadUi(root, "en"),
+    syntax: await loadSyntax(root, "en"),
+    diagrams: canonicalDiagrams.diagrams,
     catalog: canonicalCatalog,
     lessons: canonicalLessons
   },
   {
     ...localeConfig.get("vi"),
     ui: await loadUi(root, "vi"),
+    syntax: await loadSyntax(root, "vi"),
+    diagrams: localizeDiagrams(canonicalDiagrams, viDiagramOverlay).diagrams,
     catalog: localizeCatalog(canonicalCatalog, viOverlays, viTerminology),
     lessons: localizeLessons(canonicalLessons, viOverlays, viTerminology)
   }
@@ -104,12 +111,24 @@ function stat(value, label) {
   return `<li><strong>${value}</strong><span>${escapeHtml(label)}</span></li>`;
 }
 
-function lessonCode(locale, code) {
+function lessonCode(locale, section) {
+  const code = section.code;
   if (!code) return "";
+  const source = addPurposeComment(code.source, section.summary, code.language || "python", locale.syntax.purposeLabel, locale.syntax.comments);
+  const syntaxItems = detectSyntaxKeys(code.source).map((key) => {
+    const rule = syntaxRuleByKey.get(key);
+    const copy = locale.syntax.entries[key];
+    if (!rule || !copy) return "";
+    return `<li><div><code>${escapeHtml(copy.title)}</code><p>${escapeHtml(copy.body)}</p></div><a href="${escapeHtml(rule.url)}">${escapeHtml(locale.syntax.officialReference)}</a></li>`;
+  }).join("");
   return `<div class="lesson-code">
     <header><span>${escapeHtml(code.title || locale.ui.tryIt)}</span><button class="lesson-copy" type="button">${escapeHtml(locale.ui.copyCode)}</button></header>
-    <pre><code class="language-${escapeHtml(code.language || "python")}">${escapeHtml(code.source)}</code></pre>
-  </div>`;
+    <pre><code class="language-${escapeHtml(code.language || "python")}">${escapeHtml(source)}</code></pre>
+  </div>
+  <aside class="syntax-guide">
+    <header><span>⌘</span><div><h3>${escapeHtml(locale.syntax.heading)}</h3><p>${escapeHtml(locale.syntax.intro)}</p></div></header>
+    <ul>${syntaxItems}</ul>
+  </aside>`;
 }
 
 function lessonCallouts(callouts = []) {
@@ -118,12 +137,25 @@ function lessonCallouts(callouts = []) {
   </aside>`).join("");
 }
 
-function lessonSection(locale, section, index) {
+function conceptDiagram(locale, diagram) {
+  if (!diagram) return "";
+  const arrow = diagram.kind === "two-way" || diagram.kind === "parallel" ? "⇄" : "→";
+  const stages = diagram.stages.map((stage, index) => `${index ? `<i class="diagram-arrow" aria-hidden="true">${arrow}</i>` : ""}<div class="diagram-node"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></div>`).join("");
+  return `<figure class="concept-diagram ${escapeHtml(diagram.kind)}">
+    <header><p class="eyebrow">${escapeHtml(locale.ui.diagram)}</p><h3>${escapeHtml(diagram.title)}</h3></header>
+    <div class="diagram-track">${stages}</div>
+    ${diagram.kind === "cycle" ? `<div class="diagram-repeat" aria-hidden="true">↺ ${escapeHtml(locale.ui.repeatCycle)}</div>` : ""}
+    <figcaption>${escapeHtml(diagram.caption)}</figcaption>
+  </figure>`;
+}
+
+function lessonSection(locale, section, index, diagram) {
   return `<section class="lesson-section" id="${escapeHtml(section.id)}">
     <header><span>${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHtml(section.title)}</h2><p>${escapeHtml(section.summary)}</p></div></header>
     <div class="lesson-prose">${section.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div>
     ${section.points?.length ? `<ul class="lesson-points">${section.points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
-    ${lessonCode(locale, section.code)}
+    ${conceptDiagram(locale, diagram)}
+    ${lessonCode(locale, section)}
     ${lessonCallouts(section.callouts)}
   </section>`;
 }
@@ -143,7 +175,7 @@ function courseLesson(locale, chapter, lesson) {
     </nav></details>
     <article class="course-article">
       <section class="learning-outcomes" id="learning-outcomes"><div><p class="eyebrow">${escapeHtml(ui.learningOutcomes)}</p><h2>${escapeHtml(ui.whatYouCanDo)}</h2></div><ol>${lesson.outcomes.map((outcome) => `<li>${escapeHtml(outcome)}</li>`).join("")}</ol></section>
-      ${lesson.sections.map((section, index) => lessonSection(locale, section, index)).join("")}
+      ${lesson.sections.map((section, index) => lessonSection(locale, section, index, locale.diagrams.find((diagram) => diagram.chapter === lesson.chapter && diagram.section === section.id))).join("")}
       <section class="version-review" id="version-review"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.bookToCurrentReview)}</p><h2>${escapeHtml(formatMessage(ui.whatChanges, { version: course.pytorchVersion }))}</h2><p>${escapeHtml(ui.currentReviewDescription)}</p></div>
         <div class="version-grid">${lesson.modern.map((item) => `<article><span>${escapeHtml(item.topic)}</span><h3>${escapeHtml(item.current)}</h3><p><strong>${escapeHtml(ui.bookContext)}</strong> ${escapeHtml(item.book)}</p><p>${escapeHtml(item.reason)}</p></article>`).join("")}</div>
       </section>
