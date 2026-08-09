@@ -1,0 +1,235 @@
+{
+  "chapter": 17,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 240,
+  "outcomes": [
+    "Profile and benchmark PyTorch code with warm-up, synchronization, representative shapes, and separate cold-start measurements.",
+    "Distinguish torch.compile JIT optimization from torch.export full-graph capture and rewrite unsupported data-dependent control flow.",
+    "Export and verify a model with the current torch.export-based ONNX exporter, including dynamic batch constraints.",
+    "Compare quantized and floating-point models by artifact size, latency, memory, and output or task quality.",
+    "Build an inference boundary that loads trusted state_dicts, validates inputs, disables autograd, and records model provenance."
+  ],
+  "sections": [
+    {
+      "id": "measure-first",
+      "title": "Profile before choosing an optimization",
+      "summary": "Operator tables and traces identify where time and memory go; a benchmark determines whether a change improves the actual workload.",
+      "body": [
+        "Begin with a representative eager model and input distribution. Warm libraries and kernels, synchronize accelerators around wall-clock timing, and report a latency distribution rather than one call. Keep preprocessing, host-to-device transfer, model execution, and postprocessing separate unless the end-to-end service boundary intentionally includes all four.",
+        "torch.profiler records CPU and accelerator activities and can capture operator shapes, memory, call stacks, and trace events when their corresponding options are enabled. Profiling adds overhead, so use a scheduled window instead of profiling an entire production-like run. Sort by self time to find expensive operators and inspect parent operations before rewriting code."
+      ],
+      "points": [
+        "Cold start includes import, weight load, allocation, and possibly compilation.",
+        "Warm latency measures repeated execution after initialization.",
+        "Accelerator timing requires synchronization or device events.",
+        "Peak memory and quality belong beside speed."
+      ],
+      "code": {
+        "title": "Profile a bounded window",
+        "language": "python",
+        "source": "import itertools\nfrom torch.profiler import ProfilerActivity, profile, schedule\n\ndef profile_inference(run_inference, batches, device):\n    # wait + warmup + active requires exactly five or more profiler steps.\n    window = list(itertools.islice(batches, 5))\n    if len(window) < 5:\n        raise ValueError(\"provide at least five representative batches\")\n\n    activities = [ProfilerActivity.CPU]\n    if device.type == \"cuda\":\n        activities.append(ProfilerActivity.CUDA)\n\n    with profile(\n        activities=activities,\n        schedule=schedule(wait=1, warmup=1, active=3, repeat=1),\n        record_shapes=True,\n        profile_memory=True,\n        with_stack=True,\n    ) as prof:\n        for batch in window:\n            run_inference(batch)\n            prof.step()\n\n    sort_key = (\n        \"self_cuda_time_total\"\n        if device.type == \"cuda\"\n        else \"self_cpu_time_total\"\n    )\n    return prof.key_averages().table(sort_by=sort_key)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Profiler time is not benchmark time",
+          "body": "Instrumentation changes execution. Use the profiler to choose a target, then measure the optimized path without profiler overhead."
+        }
+      ]
+    },
+    {
+      "id": "compile-jit",
+      "title": "Use torch.compile for the same Python runtime",
+      "summary": "torch.compile captures graph regions at runtime, specializes them with guards, and can fall back to eager Python at graph breaks.",
+      "body": [
+        "Compile a function or module only after eager correctness tests pass. The default inductor backend can fuse operations and generate optimized kernels. The first call pays compilation cost, later calls reuse cached code while guards remain valid, and new shapes or Python values can trigger recompilation.",
+        "The conditional notebook is intentionally revealing: a Tensor-dependent Python branch may graph-break or specialize in ways that differ from a full deployment graph. Use fullgraph=True during diagnosis, inspect graph-break and recompile logs, and keep unsupported service orchestration outside the compiled model."
+      ],
+      "code": {
+        "title": "Check eager parity before timing",
+        "language": "python",
+        "source": "import torch\n\ndef compile_with_parity_check(model, example_input):\n    model.eval()\n    compiled_model = torch.compile(model)\n    with torch.inference_mode():\n        expected = model(example_input)\n        _ = compiled_model(example_input)  # compile and warm\n        actual = compiled_model(example_input)\n    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)\n    return compiled_model"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "JIT optimization is not an export artifact",
+          "body": "torch.compile accelerates execution inside a supported Python/PyTorch environment. It is not the API for producing a portable full graph for another runtime."
+        }
+      ]
+    },
+    {
+      "id": "export-full-graph",
+      "title": "Use torch.export when deployment needs a full tensor graph",
+      "summary": "torch.export captures normalized tensor computation ahead of time and records the shape constraints that make the capture sound.",
+      "body": [
+        "Unlike torch.compile, export cannot simply execute an unsupported region through ordinary Python. It must remove Python control flow from the captured program or represent it with an explicit higher-order operator. A branch on x.sum() therefore becomes a useful lesson in rewriting data-dependent logic with torch.cond.",
+        "Supply representative example inputs and declare dynamic dimensions instead of assuming one traced batch works for every shape. Run the ExportedProgram module on boundary shapes and compare with eager results. Saved export artifacts are under active development, so pin the producing and consuming PyTorch versions."
+      ],
+      "code": {
+        "title": "Export a dynamic batch contract",
+        "language": "python",
+        "source": "import torch\n\nclass ExportableModel(torch.nn.Module):\n    def forward(self, x):\n        return torch.cond(\n            x.sum() > 0,\n            lambda value: value.relu(),\n            lambda value: (-value).relu(),\n            (x,),\n        )\n\nmodel = ExportableModel().eval()\nbatch = torch.export.Dim(\"batch\", min=1, max=64)\nexample = torch.randn(4, 10)\nprogram = torch.export.export(\n    model,\n    (example,),\n    dynamic_shapes={\"x\": {0: batch}},\n)\nexported_module = program.module()\nfor batch_size in (1, 4, 64):\n    for sign in (-1.0, 1.0):\n        test_input = torch.full((batch_size, 10), sign)\n        torch.testing.assert_close(exported_module(test_input), model(test_input))"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Example shapes are assumptions unless declared dynamic",
+          "body": "Test minimum, typical, and maximum supported batches. A successful export from one tensor does not promise arbitrary shapes."
+        }
+      ]
+    },
+    {
+      "id": "aot-artifacts",
+      "title": "Package ahead-of-time execution deliberately",
+      "summary": "AOTInductor can compile an ExportedProgram into a .pt2 artifact, trading runtime compilation for a build-time deployment step.",
+      "body": [
+        "The upstream notebook demonstrates torch.export followed by AOTInductor package creation and loading. This path is valuable when startup latency or non-Python integration matters, but torch._inductor.aoti_compile_and_package and related APIs are documented as beta and can change.",
+        "Treat the artifact like a platform-specific build output: record PyTorch version, target device, dynamic-shape contract, compiler options, source checkpoint hash, and verification results. Do not assume an artifact produced for one accelerator or release is portable to another."
+      ],
+      "points": [
+        "Export establishes a sound full graph and constraints.",
+        "AOT compilation lowers that graph for a target environment.",
+        "Loading the artifact still requires input validation and parity tests.",
+        "Private-namespace beta calls require exact version pinning."
+      ]
+    },
+    {
+      "id": "onnx-export",
+      "title": "Export ONNX through the current dynamo path",
+      "summary": "PyTorch 2.13 defaults to the torch.export-based ONNX exporter and can return an ONNXProgram for inspection and saving.",
+      "body": [
+        "Set the model to evaluation mode before export and pass example inputs that match the runtime contract. With dynamo=True, use dynamic_shapes for variable dimensions, leave the output path unspecified to receive an ONNXProgram, and request report or verify options when debugging conversion.",
+        "Run eager PyTorch and the target ONNX runtime on several fixed inputs, including dynamic-shape boundaries. Compare names, shapes, dtypes, and numerical outputs. Export success alone does not prove the runtime supports the selected operators, precision, or performance target."
+      ],
+      "code": {
+        "title": "Create and save an ONNXProgram",
+        "language": "python",
+        "source": "import torch\n\ndef export_single_input_onnx(\n    model, example_input, destination=\"model.onnx\", output_name=\"output\"\n):\n    model.eval()\n    batch = torch.export.Dim(\"batch\", min=1, max=64)\n    onnx_program = torch.onnx.export(\n        model,\n        (example_input,),\n        dynamo=True,\n        dynamic_shapes=({0: batch},),\n        input_names=[\"x\"],\n        output_names=[output_name],\n        verify=True,\n    )\n    onnx_program.save(destination)\n    return onnx_program"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Dynamic shapes replaced an older habit",
+          "body": "With the dynamo exporter, prefer dynamic_shapes. dynamic_axes belongs to the legacy exporter path."
+        },
+        {
+          "kind": "warning",
+          "title": "Verification has optional dependencies",
+          "body": "The current exporter needs compatible ONNX and ONNX Script packages, and verify=True executes the result with ONNX Runtime. Pin all three in the lesson environment."
+        }
+      ]
+    },
+    {
+      "id": "quantization",
+      "title": "Quantize with a quality and hardware hypothesis",
+      "summary": "Fewer bits can reduce weight memory or accelerate supported kernels, but storage compression and runtime speed are different outcomes.",
+      "body": [
+        "The notebook derives symmetric INT8 quantization by selecting a scale, rounding and clamping integer weights, then dequantizing inside a Linear operation. Keep that derivation because it exposes quantization error. For current production experiments, PyTorch's torchao library centralizes modern quantized tensor and quantize_ workflows.",
+        "Choose weight-only, dynamic activation, static, or training quantization from a target-device requirement. Measure serialized artifact size, peak memory, warm latency, and output or task-quality change. A smaller checkpoint can run slower when the backend lacks an efficient kernel or repeatedly dequantizes weights."
+      ],
+      "code": {
+        "title": "A current torchao weight-only experiment",
+        "language": "python",
+        "source": "import copy\nimport torch\nfrom torchao.quantization import Int8WeightOnlyConfig, quantize_\n\ndef quantize_and_compare(model, example_input):\n    float_model = copy.deepcopy(model).eval()\n    quantized_model = copy.deepcopy(float_model)\n    quantize_(quantized_model, Int8WeightOnlyConfig())\n    with torch.inference_mode():\n        reference = float_model(example_input)\n        quantized = quantized_model(example_input)\n    error = (reference - quantized).abs().max().item()\n    return quantized_model, error"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Namespace migration matters",
+          "body": "The notebook's torch.quantization call is useful historical context. torchao is a separate package, so new experiments must install and pin a release compatible with the selected PyTorch build."
+        }
+      ]
+    },
+    {
+      "id": "serving-and-edge",
+      "title": "Build one safe inference boundary, then choose a runtime",
+      "summary": "FastAPI, Gradio, C++, ONNX, and ExecuTorch are delivery choices around the same validated model contract.",
+      "body": [
+        "At process startup, reconstruct the architecture, load a trusted state_dict with weights_only=True, move it to the selected device, call eval, and run a fixed smoke input. At request time, validate size and dtype, apply the exact training preprocessing, use inference_mode, bound batch or queue size, and return model and preprocessing provenance with structured errors.",
+        "Gradio is useful for an interactive demonstration and FastAPI for a service interface, but both are third-party web layers rather than PyTorch deployment formats. ONNX targets compatible external runtimes; AOT/C++ targets compiled server or desktop execution; ExecuTorch lowers export-compatible programs to .pte files for edge backends. Select from latency, platform, operator support, startup, update, and security requirements."
+      ],
+      "code": {
+        "title": "Load trusted inference weights once",
+        "language": "python",
+        "source": "import torch\n\ndef load_for_inference(\n    path, device, build_model, checkpoint_key=None\n):\n    device = torch.device(device)\n    model = build_model()\n    artifact = torch.load(path, map_location=\"cpu\", weights_only=True)\n    state_dict = artifact if checkpoint_key is None else artifact[checkpoint_key]\n    model.load_state_dict(state_dict, strict=True)\n    return model.to(device).eval()\n\n@torch.inference_mode()\ndef predict_logits(model, validated_batch, device):\n    device = torch.device(device)\n    batch = validated_batch.to(device)\n    return model(batch)\n\n# Apply task-specific sigmoid, softmax, thresholding, or decoding afterward."
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not deserialize user uploads",
+          "body": "A model endpoint accepts validated input data, not arbitrary model or pickle files. Checkpoint provenance belongs to the controlled deployment build."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Compilation versus export",
+      "book": "The examples place torch.compile and torch.export beside a model with Tensor-dependent Python control flow.",
+      "current": "Use compile for JIT optimization and export for a sound full deployment graph",
+      "reason": "torch.compile can graph-break and continue in Python; torch.export must capture supported tensor computation and explicit control flow with shape constraints."
+    },
+    {
+      "topic": "ONNX",
+      "book": "The ONNX notebook exports a simple model and executes it in ONNX Runtime.",
+      "current": "Use the torch.export-based exporter with dynamo=True and dynamic_shapes",
+      "reason": "This is the recommended and default exporter in PyTorch 2.13. It returns an inspectable ONNXProgram and supports verification workflows."
+    },
+    {
+      "topic": "Quantization",
+      "book": "The notebook derives symmetric INT8 weights and also shows the legacy dynamic quantization API.",
+      "current": "Retain the derivation and use torchao.quantization for new experiments",
+      "reason": "torchao is the current PyTorch library for modern quantized tensor and quantize_ workflows across weight and activation configurations."
+    },
+    {
+      "topic": "Checkpoint safety",
+      "book": "Deployment examples load learned model state into services and runtimes.",
+      "current": "Reconstruct code and load trusted state_dicts with weights_only=True",
+      "reason": "This narrows deserialization, avoids pickled class dependencies, and makes model architecture and preprocessing part of the reviewed deployment source."
+    },
+    {
+      "topic": "Edge deployment",
+      "book": "ExecuTorch scripts demonstrate exporting and running a model outside the ordinary training loop.",
+      "current": "Use the current ExecuTorch export, lowering, backend, and .pte runtime flow",
+      "reason": "ExecuTorch 1.3 documents a target-aware pipeline from an export-compatible model to edge-specific delegates and runtime execution."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch17--profiler_example", "reason": "Profile an MLP, inspect operator cost, and connect a targeted forward rewrite to evidence."},
+    {"slug": "p2ch17--compile_example", "reason": "Contrast eager and compiled execution around Tensor-dependent Python control flow and available backends."},
+    {"slug": "p2ch17--torch_export_example", "reason": "Capture an ExportedProgram, execute its module, and inspect AOTInductor package generation."},
+    {"slug": "p2ch17--onnx_example", "reason": "Export a simple model to ONNX and verify it in another runtime."},
+    {"slug": "p2ch17--quantization_example", "reason": "Derive symmetric INT8 quantization, compare model size, and review the legacy dynamic API before torchao."}
+  ],
+  "exercises": [
+    {
+      "title": "Optimize one measured bottleneck",
+      "prompt": "Profile the supplied MLP, identify one dominant operation or avoidable allocation, make one change, and benchmark cold start, warm p50/p95, and peak memory against eager output parity.",
+      "success": "the optimization is justified by a before/after profiler trace and an uninstrumented synchronized benchmark rather than intuition"
+    },
+    {
+      "title": "Export dynamic control flow safely",
+      "prompt": "Rewrite the conditional model with torch.cond, declare a dynamic batch from 1 to 64, and compare eager, compiled, exported, and ONNX outputs at batch sizes 1, 4, and 64.",
+      "success": "all supported paths satisfy the declared shape contract and pass explicit numerical tolerances in their target runtimes"
+    },
+    {
+      "title": "Write a deployment decision record",
+      "prompt": "Quantize one model and compare float and quantized size, p50/p95 latency, peak memory, and quality. Then choose Python, ONNX, AOT/C++, or ExecuTorch for a stated target and document checkpoint, input, update, and security requirements.",
+      "success": "the runtime decision follows measured target constraints and the inference boundary uses eval, inference_mode, input validation, and trusted weights_only loading"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "torch.profiler", "url": "https://docs.pytorch.org/docs/stable/profiler.html"},
+    {"type": "Official PyTorch", "title": "torch.compile", "url": "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"},
+    {"type": "Official PyTorch", "title": "torch.export overview", "url": "https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/export.html"},
+    {"type": "Official PyTorch", "title": "AOTInductor", "url": "https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/torch.compiler_aot_inductor.html"},
+    {"type": "Official PyTorch", "title": "torch.onnx", "url": "https://docs.pytorch.org/docs/stable/onnx.html"},
+    {"type": "Official PyTorch", "title": "torchao quantization", "url": "https://docs.pytorch.org/ao/stable/api_reference/api_ref_quantization.html"},
+    {"type": "Official PyTorch", "title": "Serialization semantics", "url": "https://docs.pytorch.org/docs/stable/notes/serialization.html"},
+    {"type": "Official PyTorch", "title": "inference_mode", "url": "https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad_mode.inference_mode.html"},
+    {"type": "Official PyTorch", "title": "Getting started with ExecuTorch", "url": "https://docs.pytorch.org/executorch/stable/getting-started.html"}
+  ]
+}

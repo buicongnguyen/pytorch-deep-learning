@@ -8,9 +8,10 @@ const course = JSON.parse(await readFile(path.join(root, "content", "course.json
 const lessonFiles = (await readdir(path.join(root, "content", "lessons"))).filter((file) => file.endsWith(".json")).sort();
 const lessons = await Promise.all(lessonFiles.map(async (file) => JSON.parse(await readFile(path.join(root, "content", "lessons", file), "utf8"))));
 const failures = [];
-const expected = { chapters: 17, notebooks: 63, codeCells: 810 };
+const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810 };
 const actual = {
   chapters: catalog.chapters.length,
+  reviewedLessons: lessons.length,
   notebooks: catalog.notebooks.length,
   codeCells: catalog.notebooks.reduce((sum, notebook) => sum + notebook.codeCellCount, 0)
 };
@@ -82,7 +83,7 @@ for (const notebook of catalog.notebooks) {
 const search = JSON.parse(await readFile(path.join(dist, "search.json"), "utf8"));
 const expectedSearchRecords = expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0);
 if (search.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} search records, found ${search.length}`);
-const report = { checkedAt: new Date().toISOString(), expected, actual: { ...actual, reviewedLessons: lessons.length }, failures };
+const report = { checkedAt: new Date().toISOString(), expected, actual, failures };
 await writeFile(path.join(dist, "validation.json"), JSON.stringify(report, null, 2) + "\n");
 if (failures.length) {
   console.error(failures.map((failure) => `- ${failure}`).join("\n"));
