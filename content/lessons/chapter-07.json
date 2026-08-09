@@ -1,0 +1,228 @@
+{
+  "chapter": 7,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 155,
+  "outcomes": [
+    "Inspect a Dataset sample and a DataLoader batch as explicit image-and-target contracts.",
+    "Build reproducible bird-versus-airplane subsets without allowing validation data to affect training transforms or statistics.",
+    "Train a classifier from raw logits with CrossEntropyLoss and a correct optimizer loop.",
+    "Evaluate class behavior separately under eval() and inference_mode(), then save the best state."
+  ],
+  "sections": [
+    {
+      "id": "dataset-contract",
+      "title": "Let Dataset define one sample",
+      "summary": "A map-style Dataset maps an index to a sample and normally reports its length.",
+      "body": [
+        "TorchVision's CIFAR10 dataset returns an image and an integer class target. Before constructing a model, inspect several examples, class names, shape, dtype, and range. A Dataset contract describes one item; batching belongs to DataLoader.",
+        "A custom map-style Dataset implements __getitem__ and usually __len__. Keeping data access outside the training loop makes it possible to test labels and preprocessing without invoking a model."
+      ],
+      "code": {
+        "title": "Inspect CIFAR-10 before batching",
+        "language": "python",
+        "source": "from torchvision import datasets\n\nraw_train = datasets.CIFAR10(root=\"data\", train=True, download=True)\nimage, target = raw_train[0]\nprint(type(image), image.size, target, raw_train.classes[target])\nassert 0 <= target < len(raw_train.classes)"
+      },
+      "points": [
+        "A sample target is an integer class index.",
+        "A transform belongs to the sample path and runs when the item is fetched.",
+        "Training and validation datasets may reference the same source format but need different transforms.",
+        "Visual inspection can reveal label, channel, and scaling mistakes early."
+      ]
+    },
+    {
+      "id": "transforms-v2",
+      "title": "Build separate training and validation transforms",
+      "summary": "Training augmentation adds plausible variation; validation preprocessing remains deterministic.",
+      "body": [
+        "TorchVision transforms v2 provides the current image transformation path. Convert the image representation explicitly, scale integer values while converting to float, then normalize with a declared baseline or statistics estimated from training data only. The current official CIFAR-10 tutorial uses 0.5 for each channel's mean and standard deviation as a simple fixed baseline.",
+        "Random crop or horizontal flip may improve the training distribution, but repeating random augmentation during validation makes metrics noisy and changes what is being evaluated. Share only deterministic preparation between the paths."
+      ],
+      "code": {
+        "title": "Two transform contracts",
+        "language": "python",
+        "source": "import torch\nfrom torchvision.transforms import v2\n\n# Fixed baseline used by the current official CIFAR-10 tutorial.\nnormalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))\ntrain_transform = v2.Compose([\n    v2.ToImage(),\n    v2.RandomHorizontalFlip(),\n    v2.ToDtype(torch.float32, scale=True),\n    normalize,\n])\nvalidation_transform = v2.Compose([\n    v2.ToImage(),\n    v2.ToDtype(torch.float32, scale=True),\n    normalize,\n])"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Statistics can leak",
+          "body": "When statistics are estimated for a new dataset, fit them on training samples only and reuse them unchanged for validation and test data."
+        }
+      ]
+    },
+    {
+      "id": "binary-subset",
+      "title": "Map ten classes to two without losing provenance",
+      "summary": "Filtering and target remapping should remain inspectable and identical across splits.",
+      "body": [
+        "CIFAR-10 labels airplanes as 0 and birds as 2. The binary task needs both a subset of indices and a target map to contiguous class indices 0 and 1. Keep the original-to-new mapping beside the class names so predictions remain interpretable.",
+        "Partition source indices before any item is fetched or augmented. Then attach the training and deterministic validation transforms to separate dataset views over the same source samples, apply the same target mapping, and reserve the official test split for one final evaluation."
+      ],
+      "code": {
+        "title": "A transparent binary view",
+        "language": "python",
+        "source": "from torch.utils.data import Dataset\n\nclass BinaryCIFAR(Dataset):\n    def __init__(self, base, mapping, indices=None):\n        self.base = base\n        self.mapping = dict(mapping)\n        candidates = range(len(base)) if indices is None else indices\n        self.indices = [i for i in candidates if base.targets[i] in self.mapping]\n\n    def __len__(self):\n        return len(self.indices)\n\n    def __getitem__(self, index):\n        image, original_target = self.base[self.indices[index]]\n        return image, self.mapping[original_target]\n\nlabel_map = {0: 0, 2: 1}  # airplane, bird"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Targets for CrossEntropyLoss",
+          "body": "A batched class-index target should have dtype torch.long and values from 0 through C - 1."
+        }
+      ]
+    },
+    {
+      "id": "dataloader",
+      "title": "Use DataLoader to batch and schedule access",
+      "summary": "DataLoader adds sampling order, collation, multiprocessing, and optional pinned memory around a Dataset.",
+      "body": [
+        "Training commonly shuffles indices each epoch, while validation uses a stable order. The default collator stacks compatible tensors and prepends the batch axis, turning image samples C × H × W into N × C × H × W.",
+        "Start with num_workers=0 for readable errors, then measure larger values on the actual system. pin_memory and persistent_workers are performance options rather than correctness requirements. Windows multiprocessing code must keep executable setup behind the documented main guard.",
+        "For a reproducible model-selection split, partition the original training indices with a seeded generator before transforms run. Use a second view of the training files for deterministic validation preprocessing, and keep the dataset's official test split outside the tuning loop."
+      ],
+      "code": {
+        "title": "Build a leak-free binary pipeline",
+        "language": "python",
+        "source": "import torch\nfrom torch.utils.data import DataLoader, Dataset\nfrom torchvision import datasets\nfrom torchvision.transforms import v2\n\nclass BinaryCIFAR(Dataset):\n    def __init__(self, base, mapping, indices=None):\n        self.base = base\n        self.mapping = dict(mapping)\n        candidates = range(len(base)) if indices is None else indices\n        self.indices = [i for i in candidates if base.targets[i] in self.mapping]\n\n    def __len__(self):\n        return len(self.indices)\n\n    def __getitem__(self, index):\n        image, original_target = self.base[self.indices[index]]\n        return image, self.mapping[original_target]\n\nlabel_map = {0: 0, 2: 1}  # airplane, bird\nnormalize = v2.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))\ntrain_transform = v2.Compose([\n    v2.ToImage(),\n    v2.RandomHorizontalFlip(),\n    v2.ToDtype(torch.float32, scale=True),\n    normalize,\n])\nvalidation_transform = v2.Compose([\n    v2.ToImage(),\n    v2.ToDtype(torch.float32, scale=True),\n    normalize,\n])\n\n# Download once, then split selected training indices before transforms run.\nraw_train = datasets.CIFAR10(root=\"data\", train=True, download=True)\nsplit_generator = torch.Generator().manual_seed(42)\ntrain_indices, validation_indices = [], []\nfor original_label in label_map:\n    class_indices = torch.tensor([\n        i for i, target in enumerate(raw_train.targets) if target == original_label\n    ])\n    order = torch.randperm(len(class_indices), generator=split_generator)\n    class_indices = class_indices[order]\n    validation_count = len(class_indices) // 10\n    validation_indices.extend(class_indices[:validation_count].tolist())\n    train_indices.extend(class_indices[validation_count:].tolist())\n\ntrain_base = datasets.CIFAR10(\"data\", train=True, transform=train_transform)\nvalidation_base = datasets.CIFAR10(\"data\", train=True, transform=validation_transform)\ntest_base = datasets.CIFAR10(\"data\", train=False, transform=validation_transform)\ntrain_data = BinaryCIFAR(train_base, label_map, train_indices)\nvalidation_data = BinaryCIFAR(validation_base, label_map, validation_indices)\ntest_data = BinaryCIFAR(test_base, label_map)\n\nloader_generator = torch.Generator().manual_seed(43)\ntrain_loader = DataLoader(\n    train_data, batch_size=64, shuffle=True, num_workers=0, generator=loader_generator\n)\nvalidation_loader = DataLoader(validation_data, batch_size=128, shuffle=False, num_workers=0)\ntest_loader = DataLoader(test_data, batch_size=128, shuffle=False, num_workers=0)\n\nimages, targets = next(iter(train_loader))\nassert images.shape[1:] == (3, 32, 32)\nassert images.dtype == torch.float32\nassert targets.dtype == torch.long\nassert len(train_data) + len(validation_data) == 10_000\nassert len(test_data) == 2_000"
+      },
+      "points": [
+        "Shuffle training indices, not validation indices.",
+        "Use drop_last only when the model or metric truly requires equal batch sizes.",
+        "Tune workers after the data path is correct.",
+        "A custom collate function is required for variable-sized samples."
+      ]
+    },
+    {
+      "id": "logits-loss",
+      "title": "Return logits and let the loss define the comparison",
+      "summary": "CrossEntropyLoss expects unnormalized class scores and integer or valid probability targets.",
+      "body": [
+        "The historical notebook explores Softmax, LogSoftmax, NLLLoss, and CrossEntropyLoss. The modern default for a single-label classifier is simpler: the final layer returns one raw logit per class and CrossEntropyLoss performs the appropriate log-softmax comparison internally.",
+        "Adding Softmax or LogSoftmax before CrossEntropyLoss is redundant and changes the values the loss expects. Apply softmax to detached logits only when presenting probabilities."
+      ],
+      "code": {
+        "title": "A baseline two-class MLP",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\ntorch.manual_seed(42)\nimages = torch.randn(4, 3, 32, 32)\ntargets = torch.tensor([0, 1, 1, 0], dtype=torch.long)\nmodel = nn.Sequential(\n    nn.Flatten(),\n    nn.Linear(3 * 32 * 32, 256),\n    nn.ReLU(),\n    nn.Linear(256, 2),\n)\nloss_fn = nn.CrossEntropyLoss()\n\nlogits = model(images)\nloss = loss_fn(logits, targets)\nassert logits.shape == (images.shape[0], 2)\nassert loss.ndim == 0"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "No probability layer before cross entropy",
+          "body": "CrossEntropyLoss expects logits that may be negative and do not need to sum to one."
+        }
+      ]
+    },
+    {
+      "id": "train-validate",
+      "title": "Keep training and validation paths visibly different",
+      "summary": "Training updates parameters; validation fixes them and measures behavior on unseen samples.",
+      "body": [
+        "Move the model and each batch to the selected device at a clear boundary. During training, select train mode, clear gradients, compute logits and loss, backpropagate, and step. During validation, select eval mode and inference mode and do not touch the optimizer.",
+        "Overall accuracy can hide asymmetric mistakes. Accumulate a two-by-two confusion matrix so bird recall and airplane recall remain visible. Save a copy of the state dictionary when the chosen validation metric improves."
+      ],
+      "code": {
+        "title": "Train, select, and test without leakage",
+        "language": "python",
+        "source": "import copy\n\nimport torch\nfrom torch import nn\n\n# Prerequisites: run \"Build a leak-free binary pipeline\" to define the three loaders,\n# then run \"A baseline two-class MLP\" to define model and loss_fn.\naccelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\nmodel = model.to(device)\noptimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)\n\ndef train_one_epoch(model, loader, loss_fn, optimizer, device):\n    model.train()\n    total_loss, total_examples = 0.0, 0\n    for images, targets in loader:\n        images, targets = images.to(device), targets.to(device)\n        optimizer.zero_grad(set_to_none=True)\n        loss = loss_fn(model(images), targets)\n        loss.backward()\n        optimizer.step()\n        total_loss += loss.item() * targets.numel()\n        total_examples += targets.numel()\n    return total_loss / total_examples\n\ndef evaluate(model, loader, loss_fn, device):\n    model.eval()\n    total_loss, correct, total_examples = 0.0, 0, 0\n    confusion = torch.zeros(2, 2, dtype=torch.int64)\n    with torch.inference_mode():\n        for images, targets in loader:\n            images, targets = images.to(device), targets.to(device)\n            logits = model(images)\n            loss = loss_fn(logits, targets)\n            predictions = logits.argmax(dim=1)\n            total_loss += loss.item() * targets.numel()\n            correct += (predictions == targets).sum().item()\n            total_examples += targets.numel()\n            flat = targets.cpu() * 2 + predictions.cpu()\n            confusion += torch.bincount(flat, minlength=4).reshape(2, 2)\n    return total_loss / total_examples, correct / total_examples, confusion\n\nbest_validation_loss = float(\"inf\")\nbest_state = None\nfor epoch in range(2):\n    training_loss = train_one_epoch(model, train_loader, loss_fn, optimizer, device)\n    validation_loss, validation_accuracy, _ = evaluate(\n        model, validation_loader, loss_fn, device\n    )\n    if validation_loss < best_validation_loss:\n        best_validation_loss = validation_loss\n        best_state = copy.deepcopy(model.state_dict())\n    print(epoch, training_loss, validation_loss, validation_accuracy)\n\nif best_state is None:\n    raise RuntimeError(\"training did not produce a finite validation checkpoint\")\nmodel.load_state_dict(best_state)\ntorch.save(best_state, \"best_binary_cifar.pt\")\nbest_validation_loss, best_validation_accuracy, confusion = evaluate(\n    model, validation_loader, loss_fn, device\n)\nrecall = confusion.diag() / confusion.sum(dim=1).clamp_min(1)\nprint(\"best validation:\", best_validation_loss, best_validation_accuracy)\nprint(\"validation confusion (truth rows, prediction columns):\\n\", confusion)\nprint(\"airplane recall, bird recall:\", recall.tolist())\n\n# The official test split is evaluated once, after model selection.\ntest_loss, test_accuracy, test_confusion = evaluate(model, test_loader, loss_fn, device)\nprint(\"test:\", test_loss, test_accuracy, test_confusion.tolist())"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "This block is intentionally cumulative",
+          "body": "Run Build a leak-free binary pipeline first to create train_loader, validation_loader, and test_loader. Then run A baseline two-class MLP to create model and loss_fn. This block defines every remaining name."
+        },
+        {
+          "kind": "note",
+          "title": "A baseline can be intentionally limited",
+          "body": "The flattened MLP ignores image locality. Keep it as a measured baseline; Chapter 8 introduces convolution rather than hiding it here."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Transforms",
+      "book": "The notebooks use the original torchvision.transforms pipeline.",
+      "current": "Use torchvision.transforms.v2 with explicit image and scaled-dtype conversion",
+      "reason": "The v2 API is the recommended TorchVision path and makes input representation and scaling easier to inspect."
+    },
+    {
+      "topic": "Classification output",
+      "book": "The chapter experiments with Softmax, LogSoftmax, NLLLoss, and CrossEntropyLoss in several combinations.",
+      "current": "Return raw logits to CrossEntropyLoss",
+      "reason": "The current loss documentation expects unnormalized class logits; probabilities belong in reporting rather than the trainable output path."
+    },
+    {
+      "topic": "Evaluation",
+      "book": "Validation is introduced alongside loader-based training.",
+      "current": "Use eval() plus inference_mode() and report per-class behavior",
+      "reason": "This separates training-dependent module state from gradient recording and prevents one aggregate accuracy from hiding a weak class."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch7--1_datasets",
+      "reason": "Inspect Dataset behavior, CIFAR-10 labels and samples, transforms, and the shift from individual items to batches."
+    },
+    {
+      "slug": "p1ch7--2_birds_airplanes",
+      "reason": "Modernize the two-class subset, logits-and-loss pairing, optimizer loop, validation path, and checkpoint review."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Audit a batch contract",
+      "prompt": "Inspect five individual samples and three batches. Assert image layout, floating dtype, finite values, target dtype, target range, and the expected bird/airplane mapping.",
+      "success": "every assertion passes and a deliberately corrupted label or channel order fails before training"
+    },
+    {
+      "title": "Compare the correct and redundant losses",
+      "prompt": "Train identical models from the same initial state using raw logits with CrossEntropyLoss and Softmax outputs with CrossEntropyLoss. Compare early gradients and loss curves.",
+      "success": "the experiment controls seed and batches and explains why the raw-logit path matches the documented loss contract"
+    },
+    {
+      "title": "Report class-specific validation",
+      "prompt": "Implement a validation function using eval() and inference_mode() that returns loss, accuracy, and a two-by-two confusion matrix without storing a computation graph.",
+      "success": "matrix totals equal the validation-set size and airplane and bird recall are reported separately"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Datasets and DataLoaders",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/data_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.utils.data",
+      "url": "https://docs.pytorch.org/docs/stable/data.html"
+    },
+    {
+      "type": "Official TorchVision",
+      "title": "Transforms v2",
+      "url": "https://docs.pytorch.org/vision/stable/transforms.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Training a CIFAR-10 classifier",
+      "url": "https://docs.pytorch.org/tutorials/beginner/blitz/cifar10_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "CrossEntropyLoss",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Save and load the model",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/saveloadrun_tutorial.html"
+    }
+  ]
+}
