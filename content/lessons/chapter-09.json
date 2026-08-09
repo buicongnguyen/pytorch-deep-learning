@@ -1,0 +1,190 @@
+{
+  "chapter": 9,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 180,
+  "outcomes": [
+    "Turn raw text into token IDs, padded batches, embeddings, and next-token targets with explicit shape contracts.",
+    "Derive causal scaled dot-product attention and verify a handwritten implementation against PyTorch 2.13 SDPA.",
+    "Assemble a small autoregressive Transformer, train it, and generate samples without leaking future tokens.",
+    "Explain how Vision Transformers turn image patches into a token sequence and use current TorchVision weight APIs."
+  ],
+  "sections": [
+    {
+      "id": "tokens-and-targets",
+      "title": "Make sequences numerical without losing their meaning",
+      "summary": "A language model sees integer token IDs, but a good implementation keeps the vocabulary, padding, and target shift visible.",
+      "body": [
+        "Begin with characters because every transformation can be inspected. Reserve distinct IDs for padding and sequence boundaries, encode each name, and create the target by shifting the sequence one position to the left. The model input at position t must contain only information available through t, while the label asks for position t + 1.",
+        "Variable-length examples can be padded into a rectangular batch. Padding is storage, not language: give nn.Embedding a padding_idx and tell the loss which target value to ignore. Print one decoded batch before training so that an off-by-one error cannot hide behind a decreasing loss."
+      ],
+      "points": [
+        "Token IDs are categorical indices and therefore use torch.long.",
+        "A batch-first token tensor normally has shape [batch, sequence].",
+        "Logits for next-token prediction have shape [batch, sequence, vocabulary].",
+        "Padding must be excluded consistently from attention and loss computation."
+      ],
+      "code": {
+        "title": "Pad inputs and labels deliberately",
+        "language": "python",
+        "source": "import torch\nfrom torch.nn.utils.rnn import pad_sequence\n\nPAD, BOS, EOS = 0, 1, 2\nencoded = [\n    torch.tensor([BOS, 5, 8, 7, EOS]),\n    torch.tensor([BOS, 9, 4, EOS]),\n]\ninputs = pad_sequence([x[:-1] for x in encoded], batch_first=True, padding_value=PAD)\ntargets = pad_sequence([x[1:] for x in encoded], batch_first=True, padding_value=-100)\n\nassert inputs.dtype == torch.long\nassert inputs.shape == targets.shape\nprint(inputs)\nprint(targets)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not reuse one sentinel blindly",
+          "body": "Embedding padding_idx must be a valid vocabulary index, while CrossEntropyLoss ignore_index may be outside the vocabulary. Keep the two roles explicit."
+        }
+      ]
+    },
+    {
+      "id": "embeddings-and-baselines",
+      "title": "Build a baseline before attention",
+      "summary": "Bigram and sequence-MLP models expose what context contributes before a Transformer adds flexible routing.",
+      "body": [
+        "A bigram table estimates the next token from only the current token. An embedding-plus-MLP baseline can flatten a fixed context window and learn interactions across positions, but its parameters are tied to that window layout. Both are valuable controls: they reveal whether the data pipeline and generation loop work before attention is introduced.",
+        "Train from unnormalized logits with cross-entropy. During generation, apply softmax only when converting logits into probabilities, sample with torch.multinomial, append the sampled token, and stop at EOS or a maximum length. Fix a torch.Generator when comparing models so sampling noise does not masquerade as model improvement."
+      ],
+      "code": {
+        "title": "Keep logits raw during training",
+        "language": "python",
+        "source": "import torch\nimport torch.nn.functional as F\n\nbatch_size, steps, vocabulary_size = 2, 4, 12\nlogits = torch.randn(\n    batch_size, steps, vocabulary_size,\n    requires_grad=True,\n)\ntargets = torch.tensor([\n    [5, 8, 7, 2],\n    [9, 4, 2, -100],\n])\n\nloss = F.cross_entropy(\n    logits.flatten(0, 1),\n    targets.flatten(),\n    ignore_index=-100,\n)\nloss.backward()\nassert logits.grad is not None"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Cross-entropy already contains log-softmax",
+          "body": "Passing probabilities instead of logits changes the objective and usually weakens gradients. Apply softmax only for interpretation or sampling."
+        }
+      ]
+    },
+    {
+      "id": "causal-attention",
+      "title": "Derive attention, then use the fused primitive",
+      "summary": "The equation is small; the difficult parts are shapes, scaling, and preventing access to future tokens.",
+      "body": [
+        "For each head, queries choose what a position seeks, keys describe what positions offer, and values carry the information to mix. Scores are QKᵀ divided by the square root of the head dimension. A causal mask removes positions to the right before softmax, and the resulting row-normalized weights mix V.",
+        "Keep a short handwritten implementation as an executable specification. PyTorch 2.13 scaled_dot_product_attention can dispatch to optimized kernels, integrates with torch.compile, and accepts is_causal=True. Compare outputs and gradients in float64 on a tiny deterministic tensor before replacing the teaching implementation. The function always honors a nonzero dropout_p, even in evaluation, so a module must pass 0.0 when it is not training."
+      ],
+      "points": [
+        "For Q, K, V shaped [B, H, T, D], attention returns [B, H, T, D].",
+        "The 1/sqrt(D) factor prevents dot products from growing with head width.",
+        "Causal masking happens before softmax.",
+        "Dropout must be zero during deterministic evaluation."
+      ],
+      "code": {
+        "title": "Current causal SDPA",
+        "language": "python",
+        "source": "import torch\nimport torch.nn.functional as F\n\ndef causal_attention(q, k, v, *, dropout_p=0.0, training=False):\n    return F.scaled_dot_product_attention(\n        q, k, v,\n        dropout_p=dropout_p if training else 0.0,\n        is_causal=True,\n    )\n\nq = torch.randn(2, 4, 8, 16, requires_grad=True)\nk = torch.randn(2, 4, 8, 16, requires_grad=True)\nv = torch.randn(2, 4, 8, 16, requires_grad=True)\nout = causal_attention(q, k, v)\nassert out.shape == q.shape"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Mask conventions differ",
+          "body": "A boolean mask does not have identical meaning across every Transformer API. Prefer is_causal=True here and add a future-token leakage test."
+        }
+      ]
+    },
+    {
+      "id": "transformer-block",
+      "title": "Compose a decoder block with testable contracts",
+      "summary": "Multi-head attention becomes a language model only after projections, residual paths, normalization, and a feed-forward network are composed correctly.",
+      "body": [
+        "Project the embedding into query, key, and value tensors, split the feature dimension into heads, apply causal attention, concatenate the heads, and use an output projection. Residual connections preserve a direct information path, while normalization and the feed-forward network transform each token independently between attention operations.",
+        "The final language-model head maps each token representation to vocabulary logits. Generation repeatedly runs the model on the available prefix and samples only from the final position. Cache-aware decoding is an advanced optimization; first establish correct full-prefix generation and deterministic tests."
+      ],
+      "points": [
+        "Embedding width must be divisible by the number of heads.",
+        "Residual additions require identical shapes.",
+        "Training uses all shifted positions in parallel; generation reveals one position at a time.",
+        "model.eval() changes dropout behavior but does not disable autograd by itself."
+      ],
+      "code": {
+        "title": "A safe generation boundary",
+        "language": "python",
+        "source": "import torch\n\n@torch.inference_mode()\ndef next_token(model, prefix, generator=None):\n    \"\"\"Sample one token; model and prefix are explicit dependencies.\"\"\"\n    model.eval()\n    logits = model(prefix)[:, -1, :]\n    probabilities = logits.softmax(dim=-1)\n    return torch.multinomial(probabilities, 1, generator=generator)"
+      }
+    },
+    {
+      "id": "ragged-and-compiled",
+      "title": "Modernize performance without hiding correctness",
+      "summary": "Efficient attention and compilation belong after the eager model has shape, mask, and gradient tests.",
+      "body": [
+        "The reference nn.Transformer remains useful for learning, but current PyTorch guidance builds efficient Transformer layers from SDPA and torch.compile. PyTorch 2.13 classifies torch.nested as API-unstable, and its documentation warns that nested tensors are not currently under active development and should be used at your own risk. Keep ordinary dense padding as the portable baseline; if you experiment, prefer layout=torch.jagged, which has better operator coverage and integrates with torch.compile.",
+        "Compile the model or a repeated block, not tokenization, printing, or sampling control flow. Warm the compiled function, compare eager and compiled outputs, and measure representative sequence lengths. Watch for recompilation when batch or sequence shapes vary."
+      ],
+      "code": {
+        "title": "Compile only after eager parity",
+        "language": "python",
+        "source": "import torch\n\ndef compile_after_eager_parity(model, sample):\n    \"\"\"Compile an injected model only after checking one eager batch.\"\"\"\n    model.eval()\n    compiled = torch.compile(model)\n    with torch.inference_mode():\n        eager = model(sample)\n        actual = compiled(sample)  # first call includes compilation\n    torch.testing.assert_close(actual, eager, rtol=1e-4, atol=1e-5)\n    return compiled"
+      }
+    },
+    {
+      "id": "vision-tokens",
+      "title": "Transfer the token idea to images",
+      "summary": "A Vision Transformer treats flattened or projected image patches as a sequence with spatial position information.",
+      "body": [
+        "Use nn.Unfold or a strided convolution to turn a [B, C, H, W] image into N patch tokens. A learned projection maps each flattened patch to the embedding width, a class token can summarize the sequence, and positional embeddings preserve patch location. Reconstructing the image from patches is the best first correctness check.",
+        "For pretrained inference, use a TorchVision weight enum and its bundled transforms. Those transforms encode resize, crop, rescaling, and normalization assumptions; inventing a similar-looking preprocessing pipeline can silently reduce accuracy. The first run may download the selected checkpoint, so cache it before an offline lesson."
+      ],
+      "code": {
+        "title": "Load ViT with its preprocessing contract",
+        "language": "python",
+        "source": "import torch\nfrom torchvision.models import ViT_B_16_Weights, vit_b_16\n\nweights = ViT_B_16_Weights.DEFAULT\nmodel = vit_b_16(weights=weights).eval()  # may download once\npreprocess = weights.transforms()\nimage = torch.rand(3, 300, 300)  # [C, H, W] in [0, 1]\nbatch = preprocess(image).unsqueeze(0)\nwith torch.inference_mode():\n    logits = model(batch)\nassert logits.shape == (1, len(weights.meta[\"categories\"]))"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Attention kernels",
+      "book": "The notebooks derive and implement scaled dot-product causal attention directly.",
+      "current": "Derive once, then use torch.nn.functional.scaled_dot_product_attention",
+      "reason": "PyTorch 2.13 SDPA selects optimized implementations when supported and composes with torch.compile while preserving the same mathematical contract."
+    },
+    {
+      "topic": "Transformer construction",
+      "book": "A small custom block and nn.Transformer-style components illustrate the architecture.",
+      "current": "Build from SDPA and compile; treat nested tensors as an unstable experiment",
+      "reason": "Current documentation describes nn.Transformer as a reference implementation and recommends lower-level building blocks for efficient variants. PyTorch 2.13 warns that nested tensors are not currently under active development."
+    },
+    {
+      "topic": "Vision models",
+      "book": "The ViT notebook constructs patches and a tiny encoder to expose the mechanics.",
+      "current": "Use TorchVision weight enums and weights.transforms() for pretrained inference",
+      "reason": "The weight object carries the exact preprocessing and category metadata associated with the selected checkpoint."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch9--generating_names", "reason": "Start with bigram sampling, shifted targets, a sequence MLP, and the complete autoregressive loop."},
+    {"slug": "p2ch9--attention", "reason": "Follow the transition from a baseline model to causal attention and Transformer blocks."},
+    {"slug": "p2ch9--scratch", "reason": "Rebuild and instrument the small Transformer as a consolidated implementation exercise."},
+    {"slug": "p2ch9--tokenization", "reason": "Compare character IDs with a word-level tokenizer and inspect how vocabulary decisions change sequences."},
+    {"slug": "p2ch9--visualization", "reason": "Inspect model structure and computation graphs after understanding the forward contracts."},
+    {"slug": "p2ch9--vit", "reason": "Transfer the sequence abstraction to non-overlapping image patches and a class token."}
+  ],
+  "exercises": [
+    {
+      "title": "Prove causality",
+      "prompt": "Create two sequences that share the same prefix and differ only in future tokens. Assert that logits over the shared prefix are equal in evaluation mode, then deliberately remove the causal mask and show the test fail.",
+      "success": "the masked model passes at every shared position and the unmasked counterexample demonstrates future-token leakage"
+    },
+    {
+      "title": "Check SDPA parity",
+      "prompt": "Implement the attention equation directly in float64 and compare forward outputs plus q, k, and v gradients with scaled_dot_product_attention on a tiny causal example. Run on CPU or force SDPBackend.MATH so backend selection does not obscure equation parity, then test the default backend separately.",
+      "success": "torch.testing.assert_close passes for outputs and all three gradients under justified tolerances, with the backend recorded"
+    },
+    {
+      "title": "Measure patch tradeoffs",
+      "prompt": "Patchify the same image with sizes 8, 16, and 32. Reconstruct each image, report token counts, and calculate the number of elements in a dense attention matrix for each case.",
+      "success": "all reconstructions match the input and the report explains the quadratic relationship between token count and attention storage"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "Transformer building blocks", "url": "https://docs.pytorch.org/tutorials/intermediate/transformer_building_blocks.html"},
+    {"type": "Official PyTorch", "title": "Scaled dot-product attention", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.nn.functional.scaled_dot_product_attention.html"},
+    {"type": "Official PyTorch", "title": "Nested tensors", "url": "https://docs.pytorch.org/docs/2.13/nested.html"},
+    {"type": "Official PyTorch", "title": "Embedding", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.nn.Embedding.html"},
+    {"type": "Official PyTorch", "title": "TorchVision ViT-B/16", "url": "https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.vit_b_16.html"}
+  ]
+}
