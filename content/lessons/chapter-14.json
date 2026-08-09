@@ -1,0 +1,169 @@
+{
+  "chapter": 14,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 195,
+  "outcomes": [
+    "Compute confusion counts, precision, recall, and F1 from model scores without hiding threshold choices.",
+    "Compare class-weighted loss and weighted sampling while explaining how each changes the effective training distribution.",
+    "Apply label-preserving augmentation and verify geometry and intensity transformations visually.",
+    "Select models and thresholds with validation data, preserve a held-out test set, and report reproducible ablations."
+  ],
+  "sections": [
+    {
+      "id": "imbalance-baseline",
+      "title": "Measure prevalence before choosing an intervention",
+      "summary": "A high accuracy can describe a model that predicts only the common negative class.",
+      "body": [
+        "Count positive and negative candidates by split and by independent source identity. Then evaluate the Chapter 13 checkpoint with its unchanged decision rule. Record confusion counts as integers before deriving ratios, because they expose what an apparently good percentage represents.",
+        "Keep raw logits or positive-class scores alongside labels and identities. Those scores support threshold analysis later; storing only hard predictions destroys information and encourages retraining for what is actually a decision-policy question."
+      ],
+      "code": {
+        "title": "Derive confusion counts explicitly",
+        "language": "python",
+        "source": "import torch\n\ndef confusion_counts(logits, labels, threshold=0.5):\n    if logits.ndim != 2 or logits.shape[1] != 2:\n        raise ValueError(\"expected two-class logits with shape [N, 2]\")\n    labels = torch.as_tensor(labels, device=logits.device, dtype=torch.long)\n    if labels.shape != logits.shape[:1]:\n        raise ValueError(\"labels must have shape [N]\")\n    if not bool(((labels == 0) | (labels == 1)).all()):\n        raise ValueError(\"labels must contain only 0 and 1\")\n    if not 0.0 <= float(threshold) <= 1.0:\n        raise ValueError(\"threshold must be between 0 and 1\")\n\n    scores = logits.softmax(dim=1)[:, 1]\n    predicted = scores >= threshold\n    positive = labels == 1\n    counts = {\n        \"tp\": int((predicted & positive).sum().item()),\n        \"fp\": int((predicted & ~positive).sum().item()),\n        \"fn\": int((~predicted & positive).sum().item()),\n        \"tn\": int((~predicted & ~positive).sum().item()),\n    }\n    return counts, scores.detach()"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Report the denominator",
+          "body": "Precision, recall, and accuracy answer different questions. Include counts and define how zero-denominator cases are handled."
+        }
+      ]
+    },
+    {
+      "id": "threshold-metrics",
+      "title": "Separate ranking quality from the operating threshold",
+      "summary": "A model emits scores; the threshold converts them into actions with different false-positive and false-negative costs.",
+      "body": [
+        "Precision is TP/(TP+FP), recall is TP/(TP+FN), and F1 is their harmonic mean. Compute them across a validation threshold grid and visualize the tradeoff. Choose a rule using validation data only, such as maximum F1 or a minimum recall constraint, and write that rule before evaluating test labels.",
+        "Use a small epsilon only to define numerical behavior, not to conceal an empty prediction set. For a series-level objective, aggregate candidate scores according to the predefined project contract before computing the final metrics."
+      ],
+      "code": {
+        "title": "Compute stable binary metrics",
+        "language": "python",
+        "source": "import torch\n\ndef precision_recall_f1(tp, fp, fn):\n    tp = torch.as_tensor(tp, dtype=torch.float64)\n    fp = torch.as_tensor(fp, dtype=torch.float64, device=tp.device)\n    fn = torch.as_tensor(fn, dtype=torch.float64, device=tp.device)\n\n    predicted_positive = tp + fp\n    actual_positive = tp + fn\n    precision = torch.where(\n        predicted_positive > 0,\n        tp / predicted_positive.clamp_min(1),\n        torch.zeros_like(tp),\n    )\n    recall = torch.where(\n        actual_positive > 0,\n        tp / actual_positive.clamp_min(1),\n        torch.zeros_like(tp),\n    )\n    pr_sum = precision + recall\n    f1 = torch.where(\n        pr_sum > 0,\n        2 * precision * recall / pr_sum.clamp_min(torch.finfo(pr_sum.dtype).eps),\n        torch.zeros_like(pr_sum),\n    )\n    return precision, recall, f1"
+      }
+    },
+    {
+      "id": "weighted-objective",
+      "title": "Understand what class weighting changes",
+      "summary": "A class-weighted loss changes the penalty attached to examples while leaving the loader distribution unchanged.",
+      "body": [
+        "CrossEntropyLoss accepts one weight per class. Increasing the positive weight increases the contribution of positive errors to the batch loss and its gradients. Calculate weights from the training partition only, log them with the run, and compare against an unweighted baseline from the same initialization.",
+        "Weighting is not a metric and does not guarantee calibrated probabilities. It changes the optimization objective, so choose the deployment threshold again on validation scores rather than assuming 0.5 remains optimal."
+      ],
+      "code": {
+        "title": "Weight training classes explicitly",
+        "language": "python",
+        "source": "import torch\n\ndef make_weighted_cross_entropy(negative_count, positive_count, device=\"cpu\"):\n    class_counts = torch.tensor(\n        [negative_count, positive_count], dtype=torch.float32\n    )\n    if (class_counts <= 0).any():\n        raise ValueError(\"each class must occur in the training split\")\n\n    class_weights = class_counts.sum() / (2 * class_counts)\n    loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights.to(device))\n    return loss_fn, class_weights"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Compute from training data only",
+          "body": "Validation and test prevalence are evaluation facts, not inputs to the training objective."
+        }
+      ]
+    },
+    {
+      "id": "weighted-sampling",
+      "title": "Use sampling as a separate experimental lever",
+      "summary": "WeightedRandomSampler changes which examples appear and how often, rather than changing their loss coefficient after loading.",
+      "body": [
+        "Assign a sampling weight to each training example, normally inverse to its class frequency, and draw a controlled number of samples with replacement. Record the resulting class mix per epoch and remember that the same rare example may be visited repeatedly.",
+        "Do not combine weighted sampling and weighted loss by habit. Their effects multiply and may overcorrect. Compare baseline, loss weighting, sampling, and their combination as four explicit treatments under the same split and evaluation rule."
+      ],
+      "code": {
+        "title": "Create per-example sampling weights",
+        "language": "python",
+        "source": "import torch\nfrom torch.utils.data import DataLoader, WeightedRandomSampler\n\ndef make_weighted_loader(dataset, training_labels, class_weights, batch_size=32):\n    labels = torch.as_tensor(training_labels, dtype=torch.long, device=\"cpu\")\n    weights = torch.as_tensor(class_weights, dtype=torch.double, device=\"cpu\")\n    if labels.ndim != 1 or len(labels) != len(dataset):\n        raise ValueError(\"training_labels must contain one label per dataset item\")\n    if labels.numel() == 0:\n        raise ValueError(\"weighted sampling requires a non-empty dataset\")\n    if weights.ndim != 1 or len(weights) == 0:\n        raise ValueError(\"class_weights must be a non-empty vector\")\n    if not bool(torch.isfinite(weights).all()) or bool((weights <= 0).any()):\n        raise ValueError(\"class_weights must be finite and positive\")\n    if labels.numel():\n        smallest = int(labels.min().item())\n        largest = int(labels.max().item())\n        if smallest < 0 or largest >= len(weights):\n            raise ValueError(\"training label is outside the class-weight range\")\n\n    example_weights = weights[labels]\n    sampler = WeightedRandomSampler(\n        weights=example_weights,\n        num_samples=len(labels),\n        replacement=True,\n        generator=torch.Generator().manual_seed(23),\n    )\n    return DataLoader(\n        dataset, batch_size=batch_size, sampler=sampler, shuffle=False\n    )"
+      }
+    },
+    {
+      "id": "augmentation-audit",
+      "title": "Augment anatomy without changing the label contract",
+      "summary": "Random transformations are useful only when their geometry, interpolation, and intensity behavior remain plausible.",
+      "body": [
+        "Apply small translations, rotations, flips only where orientation permits, scaling, and controlled intensity noise to training samples. For 3D CT crops, use tested tensor operations that transform all related targets consistently. Do not apply a 2D image transform to each slice independently when that breaks 3D structure.",
+        "TorchVision transforms v2 are the recommended current API for ordinary images and paired masks, and Chapter 15 uses that capability for 2D segmentation. The book's 3D CT path still needs domain-specific transforms with explicit interpolation and padding. Save grids of repeated transformations for positive and negative candidates."
+      ],
+      "points": [
+        "Never augment validation or test samples stochastically.",
+        "Use nearest-neighbor interpolation for discrete masks.",
+        "Transform image and target geometry with the same random parameters.",
+        "Seed the augmentation path for regression tests."
+      ],
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "A plausible image can carry a wrong label",
+          "body": "Visual quality alone is insufficient. Verify that the candidate remains in the crop and that orientation-dependent transformations are permitted by the task."
+        }
+      ]
+    },
+    {
+      "id": "ablation-and-selection",
+      "title": "Turn improvements into controlled comparisons",
+      "summary": "One-factor ablations and frozen evaluation rules are more informative than an untraceable pile of tricks.",
+      "body": [
+        "Begin every treatment from the same base checkpoint or recorded initialization, data split, number of optimizer updates, and validation protocol. Change one primary factor, repeat across more than one seed where practical, and report both the primary metric and confusion counts.",
+        "Choose the checkpoint and threshold on validation data. Evaluate the held-out test partition once for the final comparison, then report false-positive and false-negative examples with source identities. If the test result prompts a design change, that creates a new experiment and requires a new untouched test set or transparent exploratory status."
+      ],
+      "code": {
+        "title": "Store the selected decision rule",
+        "language": "python",
+        "source": "def make_selection_record(\n    checkpoint, threshold, validation_f1, split_revision\n):\n    return {\n        \"checkpoint\": str(checkpoint),\n        \"threshold\": float(threshold),\n        \"validation_f1\": float(validation_f1),\n        \"split_revision\": str(split_revision),\n        \"selection_rule\": \"maximum validation F1\",\n    }\n\n# Persist the returned record before the final test evaluation."
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Class imbalance",
+      "book": "The project improves an imbalanced candidate classifier with sampling, loss, and augmentation choices.",
+      "current": "Compare CrossEntropyLoss weights and WeightedRandomSampler as separate interventions",
+      "reason": "Loss weighting changes gradient contribution; sampling changes exposure frequency. Combining them without an ablation can double-correct the same imbalance."
+    },
+    {
+      "topic": "Transforms",
+      "book": "Custom CT augmentation preserves the candidate-centered 3D crop contract.",
+      "current": "Use transforms v2 for supported 2D image/mask pipelines; retain tested 3D operations for CT",
+      "reason": "TorchVision recommends v2 and can transform images and masks together, but generic 2D transforms do not replace domain-specific 3D geometry."
+    },
+    {
+      "topic": "Model selection",
+      "book": "F1 summarizes the balance between precision and recall for the project metric.",
+      "current": "Freeze both checkpoint and threshold from validation data",
+      "reason": "A score becomes a class decision only after choosing a threshold. Selecting that threshold on test labels leaks evaluation information."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch14_explore_data", "reason": "Review positive and negative candidates and connect imbalance statistics to actual CT examples."},
+    {"slug": "p2ch14--sandbox", "reason": "Inspect metrics, subsets, augmentation, and the training application's improvement levers interactively."},
+    {"slug": "p2ch14--1_final_metric_f1_score", "reason": "Plot and interpret precision, recall, and F1 behavior for the final decision rule."}
+  ],
+  "exercises": [
+    {
+      "title": "Select a validation threshold",
+      "prompt": "Save validation scores and labels once, sweep thresholds without rerunning the model, plot precision/recall/F1, and freeze a selection record before viewing test metrics.",
+      "success": "the chosen threshold follows a written rule and the final report includes counts plus the frozen validation decision"
+    },
+    {
+      "title": "Run a four-treatment imbalance ablation",
+      "prompt": "Compare baseline, weighted loss, weighted sampler, and both together using the same initialization, split, update count, and seeds. Record effective sampled class ratios.",
+      "success": "the report distinguishes objective weighting from exposure weighting and does not choose a treatment from test results"
+    },
+    {
+      "title": "Audit augmentation",
+      "prompt": "Generate repeated transformed views for representative positive, negative, boundary, and small candidates. Add invariants for output shape, finite values, target consistency, and candidate visibility.",
+      "success": "visual and automated checks identify the allowed transform ranges and reject at least one deliberately invalid transformation"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "CrossEntropyLoss", "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html"},
+    {"type": "Official PyTorch", "title": "torch.utils.data samplers", "url": "https://docs.pytorch.org/docs/stable/data.html"},
+    {"type": "Official PyTorch", "title": "TorchVision transforms v2", "url": "https://docs.pytorch.org/vision/stable/transforms.html"},
+    {"type": "Official PyTorch", "title": "Reproducibility", "url": "https://docs.pytorch.org/docs/stable/notes/randomness.html"}
+  ]
+}
