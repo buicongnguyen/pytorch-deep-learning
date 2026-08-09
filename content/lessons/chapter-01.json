@@ -1,5 +1,7 @@
 {
   "chapter": 1,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
   "minutes": 45,
   "outcomes": [
     "Describe a deep-learning experiment as data, model, loss, gradients, and an optimizer working together.",
@@ -25,7 +27,7 @@
       "code": {
         "title": "The five-part workflow",
         "language": "python",
-        "source": "import torch\nfrom torch import nn\n\nx = torch.tensor([[1.0], [2.0], [3.0]])\ny = torch.tensor([[3.0], [5.0], [7.0]])\n\nmodel = nn.Linear(1, 1)\nloss_fn = nn.MSELoss()\noptimizer = torch.optim.SGD(model.parameters(), lr=0.05)\n\noptimizer.zero_grad(set_to_none=True)\nprediction = model(x)\nloss = loss_fn(prediction, y)\nloss.backward()\noptimizer.step()\n\nprint(f\"loss={loss.item():.4f}\")"
+        "source": "import torch\nfrom torch import nn\n\ntorch.manual_seed(7)\nx = torch.tensor([[1.0], [2.0], [3.0]])\ny = torch.tensor([[3.0], [5.0], [7.0]])\n\nmodel = nn.Linear(1, 1)\nloss_fn = nn.MSELoss()\noptimizer = torch.optim.SGD(model.parameters(), lr=0.05)\n\noptimizer.zero_grad(set_to_none=True)\nprediction = model(x)\nloss = loss_fn(prediction, y)\nloss.backward()\noptimizer.step()\n\nprint(f\"loss={loss.item():.4f}\")"
       },
       "callouts": [
         {
@@ -46,7 +48,7 @@
       "code": {
         "title": "Inspect one operation at a time",
         "language": "python",
-        "source": "features = torch.randn(4, 3)\nweights = torch.randn(3, 2)\nlogits = features @ weights\n\nprint(\"features\", features.shape, features.dtype)\nprint(\"weights \", weights.shape, weights.dtype)\nprint(\"logits  \", logits.shape, logits.grad_fn)"
+        "source": "import torch\n\nfeatures = torch.randn(4, 3)\nweights = torch.randn(3, 2, requires_grad=True)\nlogits = features @ weights\n\nprint(\"features\", features.shape, features.dtype)\nprint(\"weights \", weights.shape, weights.dtype)\nprint(\"logits  \", logits.shape, logits.grad_fn)"
       },
       "callouts": [
         {
@@ -108,7 +110,7 @@
       "code": {
         "title": "Print the tensor contract",
         "language": "python",
-        "source": "def describe(name: str, tensor: torch.Tensor) -> None:\n    print(\n        name,\n        {\n            \"shape\": tuple(tensor.shape),\n            \"dtype\": str(tensor.dtype),\n            \"device\": str(tensor.device),\n            \"requires_grad\": tensor.requires_grad,\n        },\n    )\n\ndescribe(\"x\", x)"
+        "source": "import torch\n\ndef describe(name: str, tensor: torch.Tensor) -> None:\n    print(\n        name,\n        {\n            \"shape\": tuple(tensor.shape),\n            \"dtype\": str(tensor.dtype),\n            \"device\": str(tensor.device),\n            \"requires_grad\": tensor.requires_grad,\n        },\n    )\n\nsample = torch.rand(2, 3)\ndescribe(\"sample\", sample)"
       }
     }
   ],

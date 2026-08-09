@@ -1,0 +1,218 @@
+{
+  "chapter": 3,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 135,
+  "outcomes": [
+    "Predict a tensor's shape, dtype, device, stride, and gradient intent after common operations.",
+    "Distinguish a copy from a shared-storage conversion and a view from a potentially copying reshape.",
+    "Apply indexing and broadcasting while explaining which dimensions align.",
+    "Replace the removed named-tensor API with explicit axis conventions and supported dimension operations."
+  ],
+  "sections": [
+    {
+      "id": "tensor-contract",
+      "title": "Read every tensor as a contract",
+      "summary": "Shape, dtype, device, layout, and meaning determine whether an operation is valid.",
+      "body": [
+        "A tensor is a multidimensional array with one dtype and one device. Its shape tells how many elements live on each axis, while the application gives those axes meaning. A 32 × 3 × 224 × 224 tensor is useful only when the code agrees that the dimensions represent batch, channel, height, and width.",
+        "Track this contract at boundaries: after decoding data, before a model call, before a loss, and before converting to NumPy. Printing the contract close to those boundaries turns many late matrix or device errors into immediate, readable assertions."
+      ],
+      "points": [
+        "Shape answers how many elements exist along each axis.",
+        "Dtype controls representation, valid operations, precision, and memory.",
+        "Device identifies where the storage and computation live.",
+        "Stride describes how index movement maps to underlying storage."
+      ],
+      "code": {
+        "title": "Inspect and assert a tensor contract",
+        "language": "python",
+        "source": "import torch\n\nimages = torch.rand(8, 3, 32, 32)\nprint({\n    \"shape\": tuple(images.shape),\n    \"dtype\": str(images.dtype),\n    \"device\": str(images.device),\n    \"stride\": images.stride(),\n})\nassert images.ndim == 4\nassert images.shape[1] == 3\nassert images.is_floating_point()"
+      }
+    },
+    {
+      "id": "construction-sharing",
+      "title": "Choose construction and conversion deliberately",
+      "summary": "torch.tensor copies input data; as_tensor and from_numpy can preserve existing storage.",
+      "body": [
+        "Creating a tensor from Python values normally produces new storage and infers a dtype unless one is specified. A copied tensor is independent, which is often the simplest ownership rule. At large data boundaries, avoiding a copy may matter, but shared memory also means a mutation on one side can change the other.",
+        "For NumPy arrays on CPU, from_numpy creates a tensor that shares memory when the array representation is supported. as_tensor avoids a copy when possible. Use clone() when a later stage must own an independent snapshot."
+      ],
+      "code": {
+        "title": "Observe shared NumPy storage",
+        "language": "python",
+        "source": "import numpy as np\n\narray = np.array([1.0, 2.0, 3.0], dtype=np.float32)\nshared = torch.from_numpy(array)\nowned = torch.tensor(array)\n\narray[0] = 99.0\nprint(shared)  # sees 99\nprint(owned)   # retains 1"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Shared means mutable from both sides",
+          "body": "Zero-copy conversion is not automatically safer or faster overall. Document ownership, especially when a decoder reuses buffers."
+        }
+      ]
+    },
+    {
+      "id": "views-strides",
+      "title": "Reason about views through strides",
+      "summary": "A view reinterprets existing storage; transpose can make that layout non-contiguous.",
+      "body": [
+        "Basic slicing, transpose, permute, squeeze, and many other operations can return views. Creating the view moves no element, and a write through the view can change the base tensor. The new stride records how to reach neighboring logical elements.",
+        "view() requires a shape compatible with the current stride pattern. reshape() is the safer interface when callers may pass non-contiguous tensors because it returns a view when possible and otherwise makes a copy. Do not write code that depends on reshape always sharing storage."
+      ],
+      "code": {
+        "title": "Trace contiguity and storage",
+        "language": "python",
+        "source": "base = torch.arange(12).reshape(3, 4)\ntransposed = base.transpose(0, 1)\nflattened = transposed.reshape(-1)\n\nprint(base.stride(), base.is_contiguous())\nprint(transposed.stride(), transposed.is_contiguous())\nprint(flattened.stride(), flattened.is_contiguous())\n\ntransposed[0, 0] = -1\nassert base[0, 0].item() == -1"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Indexing has two important cases",
+          "body": "Basic indexing returns a view, while advanced indexing returns a copy. Assignment through either form still writes into the indexed destination."
+        }
+      ]
+    },
+    {
+      "id": "broadcasting",
+      "title": "Align dimensions from the right",
+      "summary": "Broadcasting expands compatible size-one or missing dimensions without materializing repeated data.",
+      "body": [
+        "For an elementwise operation, compare shapes from the trailing dimension toward the front. Two dimensions are compatible when their sizes match or one size is 1; a missing leading dimension behaves like size 1. The result takes the larger compatible size at every position.",
+        "Broadcasting is concise but can hide a semantic mistake. A channel scale shaped 3 will align with the final axis, not automatically with the channel axis of an N × C × H × W batch. Reshape it to 1 × 3 × 1 × 1 so the intended alignment is visible."
+      ],
+      "code": {
+        "title": "Normalize an image batch by channel",
+        "language": "python",
+        "source": "batch = torch.rand(16, 3, 32, 32)\nmean = torch.tensor([0.49, 0.48, 0.45]).reshape(1, 3, 1, 1)\nstd = torch.tensor([0.25, 0.24, 0.26]).reshape(1, 3, 1, 1)\nnormalized = (batch - mean) / std\n\nassert normalized.shape == batch.shape"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Check the semantic axis",
+          "body": "Broadcast-compatible shapes can still represent the wrong computation. Name the axis convention in prose and assert expected sizes."
+        }
+      ]
+    },
+    {
+      "id": "device-movement",
+      "title": "Move tensors without losing their contract",
+      "summary": "Device transfer can copy storage, while dtype conversion can change precision and valid operations.",
+      "body": [
+        "Tensor operations require participating tensors to be on compatible devices. Select the available accelerator once, then move the model and batches at a visible boundary. Avoid sprinkling cuda() calls through preprocessing and model code.",
+        "Only CPU tensors without active gradient tracking can be converted directly to NumPy. For a model result, the explicit path is result.detach().cpu().numpy(). Each step communicates a distinct change: stop gradient use, transfer storage, then expose the array view."
+      ],
+      "code": {
+        "title": "A portable device boundary",
+        "language": "python",
+        "source": "accelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nx = torch.randn(4, 5, device=device, requires_grad=True)\ny = x.square().sum(dim=1)\narray = y.detach().cpu().numpy()\nprint(array.shape)"
+      }
+    },
+    {
+      "id": "named-tensor-history",
+      "title": "Replace named tensors with explicit supported code",
+      "summary": "PyTorch 2.13 hard-removed Tensor.names and its associated APIs.",
+      "body": [
+        "The upstream named-tensor notebook records an experiment that once attached strings to dimensions and aligned them by name. PyTorch deprecated that feature and hard-removed Tensor.names and the associated APIs in 2.13 to remove overhead and code bloat. The notebook is therefore historical material and must not be presented as runnable current code.",
+        "Preserve its teaching question: how can code make dimension meaning hard to misuse? Current core examples should use documented axis conventions, constants, assertions, reshape, movedim, and permute. Small helper functions can give semantic operations names without depending on a removed tensor feature."
+      ],
+      "points": [
+        "Mark the upstream named-tensor notebook as historical before readers open it.",
+        "Do not offer refine_names(), align_as(), rename(), or Tensor.names as a PyTorch 2.13 solution.",
+        "Write layouts such as NCHW beside function inputs and outputs.",
+        "Use movedim() or permute() with assertions when an axis order changes."
+      ],
+      "code": {
+        "title": "Make axis intent explicit without named tensors",
+        "language": "python",
+        "source": "CHANNEL = 1\n\ndef rgb_to_gray_nchw(images: torch.Tensor) -> torch.Tensor:\n    assert images.ndim == 4 and images.shape[CHANNEL] == 3\n    weights = images.new_tensor([0.2126, 0.7152, 0.0722])\n    weights = weights.reshape(1, 3, 1, 1)\n    return (images * weights).sum(dim=CHANNEL, keepdim=True)\n\ngray = rgb_to_gray_nchw(torch.rand(2, 3, 8, 8))\nassert gray.shape == (2, 1, 8, 8)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Historical notebook",
+          "body": "p1ch3/2_named_tensors.ipynb targets an API that does not exist in PyTorch 2.13. Keep it for historical comparison only; its named-tensor cells are expected to fail."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Named tensors",
+      "book": "The chapter demonstrates Tensor.names, refine_names(), align_as(), and named reductions as an experimental safety feature.",
+      "current": "Named tensors were hard-removed in PyTorch 2.13",
+      "reason": "The official 2.13 release notes state that the deprecated feature and associated APIs were removed. Current lessons must use explicit axis conventions and supported shape operations."
+    },
+    {
+      "topic": "Accelerators",
+      "book": "The tensor notebook inspects CUDA directly.",
+      "current": "Use torch.accelerator for backend-neutral selection",
+      "reason": "The same tensor contract should transfer to CUDA, MPS, XPU, other supported accelerators, or CPU without vendor-specific branches."
+    },
+    {
+      "topic": "Shape changes",
+      "book": "view(), storage, stride, and contiguity are explored in detail.",
+      "current": "Retain the storage model and prefer reshape() when contiguity is not guaranteed",
+      "reason": "reshape communicates the desired logical shape while handling incompatible strides; code must not assume whether it returns a view or a copy."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch3--1_tensors",
+      "reason": "Use this as the core lab for construction, indexing, storage, strides, dtype, NumPy sharing, serialization, and devices."
+    },
+    {
+      "slug": "p1ch3--2_named_tensors",
+      "status": "historical",
+      "runtime": "PyTorch 2.12 or earlier",
+      "reason": "Historical only: compare its semantic-dimension goal with current explicit-layout code, but do not run its removed APIs on PyTorch 2.13."
+    },
+    {
+      "slug": "p1ch3--scratch",
+      "reason": "Use selected cells to investigate storage and views after checking that they do not depend on removed named-tensor APIs."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Trace a view pipeline",
+      "prompt": "Start with a 2 × 3 × 4 tensor, then slice, transpose, and reshape it. Before running each line, predict shape, stride, contiguity, and whether storage is shared; verify every prediction.",
+      "success": "the report correctly distinguishes every view from any copy and demonstrates one mutation through shared storage"
+    },
+    {
+      "title": "Prove a broadcast",
+      "prompt": "Normalize an N × C × H × W batch with per-channel statistics. Write down the right-to-left compatibility check and include an assertion that rejects a statistics vector with the wrong channel count.",
+      "success": "the output retains N × C × H × W and the guard fails clearly for incompatible channel metadata"
+    },
+    {
+      "title": "Modernize the named-dimension idea",
+      "prompt": "Choose one useful operation from the historical named-tensor notebook and rewrite it for PyTorch 2.13 using explicit layout documentation, dimension constants, reshape or movedim, and shape assertions.",
+      "success": "the solution uses no removed named-tensor API and makes an incorrect axis order fail near the function boundary"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "PyTorch 2.13 release blog",
+      "url": "https://pytorch.org/blog/pytorch-2-13-release-blog/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Tensors tutorial",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Tensor views",
+      "url": "https://docs.pytorch.org/docs/stable/tensor_view.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Broadcasting semantics",
+      "url": "https://docs.pytorch.org/docs/stable/notes/broadcasting.html"
+    }
+  ]
+}

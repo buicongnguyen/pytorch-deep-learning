@@ -37,7 +37,7 @@ function layout({ title, description, body, activeChapter = 0, canonical = "", p
   <meta name="description" content="${escapeHtml(description)}">
   <meta name="theme-color" content="#071312">
   <link rel="canonical" href="${siteUrl}${canonical}">
-  <link rel="stylesheet" href="${base}assets/styles.css?v=2">
+  <link rel="stylesheet" href="${base}assets/styles.css?v=3">
   <title>${escapeHtml(fullTitle)}</title>
 </head>
 <body class="${pageClass}">
@@ -64,7 +64,7 @@ function layout({ title, description, body, activeChapter = 0, canonical = "", p
     <input id="site-search" type="search" autocomplete="off" placeholder="Try tensors, diffusion, DDP…">
     <div class="search-results" aria-live="polite"></div>
   </dialog>
-  <script type="module" src="${base}assets/app.js?v=2"></script>
+  <script type="module" src="${base}assets/app.js?v=3"></script>
 </body>
 </html>`;
 }
@@ -101,14 +101,14 @@ function courseLesson(chapter, lesson) {
   if (!lesson) return `<section class="lesson-pending"><p class="eyebrow">Course lesson</p><h2>Editorial review in progress</h2><p>The original notebook guide remains available below while this chapter's PyTorch ${escapeHtml(course.pytorchVersion)} lesson is being written and checked.</p></section>`;
   const notebookReasons = lesson.notebookLinks.map((item) => {
     const notebook = catalog.notebooks.find((candidate) => candidate.slug === item.slug);
-    return notebook ? `<li><a href="${base}${notebookPath(notebook)}"><strong>${escapeHtml(notebook.title)}</strong><span>${escapeHtml(item.reason)}</span></a></li>` : "";
+    return notebook ? `<li><a href="${base}${notebookPath(notebook)}"><strong>${escapeHtml(notebook.title)}${item.status === "historical" ? `<small class="historical-badge">Historical · ${escapeHtml(item.runtime)}</small>` : ""}</strong><span>${escapeHtml(item.reason)}</span></a></li>` : "";
   }).join("");
   return `<div class="course-layout">
-    <aside class="lesson-toc"><strong>In this chapter</strong><nav>
+    <details class="lesson-toc" open><summary>In this chapter</summary><nav>
       <a href="#learning-outcomes">Learning outcomes</a>
       ${lesson.sections.map((section) => `<a href="#${escapeHtml(section.id)}">${escapeHtml(section.title)}</a>`).join("")}
       <a href="#version-review">Version review</a><a href="#guided-notebooks">Guided notebooks</a><a href="#exercises">Exercises</a><a href="#references">References</a>
-    </nav></aside>
+    </nav></details>
     <article class="course-article">
       <section class="learning-outcomes" id="learning-outcomes"><div><p class="eyebrow">Learning outcomes</p><h2>What you will be able to do</h2></div><ol>${lesson.outcomes.map((outcome) => `<li>${escapeHtml(outcome)}</li>`).join("")}</ol></section>
       ${lesson.sections.map(lessonSection).join("")}
@@ -167,12 +167,15 @@ for chapter in atlas:
 function chapterPage(chapter) {
   const notebooks = catalog.notebooks.filter((item) => item.chapter === chapter.number);
   const lesson = lessonByChapter.get(chapter.number);
-  const notebookList = notebooks.length ? notebooks.map((notebook, index) => `
-    <a class="notebook-card" href="${base}${notebookPath(notebook)}">
+  const notebookList = notebooks.length ? notebooks.map((notebook, index) => {
+    const courseNote = lesson?.notebookLinks.find((item) => item.slug === notebook.slug);
+    return `
+    <a class="notebook-card${courseNote?.status === "historical" ? " historical" : ""}" href="${base}${notebookPath(notebook)}">
       <span class="sequence">${String(index + 1).padStart(2, "0")}</span>
-      <div><h3>${escapeHtml(notebook.title)}</h3><p>${escapeHtml(notebook.summary)}</p><code>${escapeHtml(notebook.path)}</code></div>
+      <div><h3>${escapeHtml(notebook.title)}${courseNote?.status === "historical" ? `<small class="historical-badge">Historical · ${escapeHtml(courseNote.runtime)}</small>` : ""}</h3><p>${escapeHtml(notebook.summary)}</p><code>${escapeHtml(notebook.path)}</code></div>
       <aside><strong>${notebook.codeCellCount}</strong><span>code cells</span><b>Read →</b></aside>
-    </a>`).join("") : `
+    </a>`;
+  }).join("") : `
     <div class="empty-chapter"><span>Concept chapter</span><h3>No dedicated notebook in the upstream repository</h3><p>This route supplies the context that connects the surrounding executable chapters. Continue to the next chapter for runnable examples.</p></div>`;
   const previous = catalog.chapters.find((item) => item.number === chapter.number - 1);
   const next = catalog.chapters.find((item) => item.number === chapter.number + 1);
@@ -192,13 +195,15 @@ function chapterPage(chapter) {
 
 function notebookPage(notebook) {
   const chapter = catalog.chapters.find((item) => item.number === notebook.chapter);
+  const courseNote = lessonByChapter.get(notebook.chapter)?.notebookLinks.find((item) => item.slug === notebook.slug);
   const body = `
     <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="${base}">Atlas</a><span>/</span><a href="${base}${chapterPath(chapter.number)}">Chapter ${chapter.number}</a><span>/</span><b>${escapeHtml(notebook.title)}</b></nav>
     <header class="notebook-hero">
       <div><p class="eyebrow">Chapter ${chapterLabel(chapter.number)} · Guided notebook</p><h1>${escapeHtml(notebook.title)}</h1><p>${escapeHtml(notebook.summary)}</p></div>
       <aside><strong>${notebook.codeCellCount}</strong><span>explained code cells</span></aside>
     </header>
-    <div class="notebook-toolbar"><div><span class="source-dot"></span><code>${escapeHtml(notebook.path)}</code></div><nav><a href="${notebook.githubUrl}">View source ↗</a><a class="colab-button" href="${notebook.colabUrl}">Open in Colab ↗</a></nav></div>
+    ${courseNote ? `<aside class="notebook-course-note ${escapeHtml(courseNote.status || "current")}"><strong>${courseNote.status === "historical" ? `Historical API · ${escapeHtml(courseNote.runtime)}` : "Course notebook note"}</strong><p>${escapeHtml(courseNote.reason)}</p></aside>` : ""}
+    <div class="notebook-toolbar"><div><span class="source-dot"></span><code>${escapeHtml(notebook.path)}</code></div><nav><a href="${notebook.githubUrl}">View source ↗</a>${courseNote?.status === "historical" ? `<span class="colab-disabled">Colab incompatible with PyTorch ${escapeHtml(course.pytorchVersion)}</span>` : `<a class="colab-button" href="${notebook.colabUrl}">Open in Colab ↗</a>`}</nav></div>
     <section class="reader-layout">
       <aside class="cell-toc"><strong>On this page</strong><nav></nav></aside>
       <div class="notebook-reader" aria-live="polite"><div class="reader-loading"><span></span><p>Loading pinned notebook code…</p></div></div>

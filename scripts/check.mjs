@@ -22,21 +22,45 @@ for (const notebook of catalog.notebooks) {
 const lessonChapters = lessons.map((lesson) => lesson.chapter).sort((a, b) => a - b);
 if (JSON.stringify(lessonChapters) !== JSON.stringify(course.reviewedChapters)) failures.push("course.reviewedChapters must exactly match the lesson files");
 if (new Set(lessonChapters).size !== lessonChapters.length) failures.push("Each chapter may have only one lesson file");
+if (JSON.stringify(lessonChapters) !== JSON.stringify(Array.from({ length: lessons.length }, (_, index) => index + 1))) failures.push("Reviewed lessons must form the contiguous chapter prefix 1..N");
+if (course.upstreamCommit !== catalog.upstream.commit) failures.push("Course and notebook catalog must pin the same upstream commit");
+const reservedSectionIds = new Set(["learning-outcomes", "version-review", "guided-notebooks", "exercises", "references"]);
 for (const lesson of lessons) {
   const prefix = `Chapter ${lesson.chapter}`;
   if (!catalog.chapters.some((chapter) => chapter.number === lesson.chapter)) failures.push(`${prefix}: unknown chapter`);
+  if (lesson.pytorchVersion !== course.pytorchVersion) failures.push(`${prefix}: pytorchVersion must match the course target`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(lesson.reviewedAt || "")) failures.push(`${prefix}: missing ISO reviewedAt date`);
   if (!Number.isInteger(lesson.minutes) || lesson.minutes < 10) failures.push(`${prefix}: invalid lesson duration`);
   if (!Array.isArray(lesson.outcomes) || lesson.outcomes.length < 3) failures.push(`${prefix}: expected at least 3 learning outcomes`);
   if (!Array.isArray(lesson.sections) || lesson.sections.length < 4) failures.push(`${prefix}: expected at least 4 lesson sections`);
   if (new Set(lesson.sections?.map((section) => section.id)).size !== lesson.sections?.length) failures.push(`${prefix}: section IDs must be unique`);
   for (const section of lesson.sections || []) {
     if (!section.id || !section.title || !section.summary || !Array.isArray(section.body) || !section.body.length) failures.push(`${prefix}: incomplete section ${section.id || "(missing id)"}`);
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(section.id || "") || reservedSectionIds.has(section.id)) failures.push(`${prefix}: unsafe or reserved section ID ${section.id}`);
+    if (section.code && (!section.code.title || !section.code.language || !section.code.source)) failures.push(`${prefix}: incomplete code block in ${section.id}`);
+    if (section.code?.language === "python" && /(?:\.data\b|pretrained\s*=\s*True|torch\.cuda\.amp|torch\.jit\.)/.test(section.code.source)) failures.push(`${prefix}: deprecated API in current Python example ${section.id}`);
   }
   if (!Array.isArray(lesson.modern) || lesson.modern.length < 2) failures.push(`${prefix}: expected at least 2 book-to-current review notes`);
+  for (const item of lesson.modern || []) if (!item.topic || !item.book || !item.current || !item.reason) failures.push(`${prefix}: incomplete book-to-current review note`);
   if (!Array.isArray(lesson.exercises) || lesson.exercises.length < 3) failures.push(`${prefix}: expected at least 3 exercises`);
+  for (const exercise of lesson.exercises || []) if (!exercise.title || !exercise.prompt || !exercise.success) failures.push(`${prefix}: incomplete exercise`);
   if (!Array.isArray(lesson.references) || !lesson.references.some((reference) => reference.url === "https://www.learnpytorch.io/" || reference.url.startsWith("https://www.learnpytorch.io/"))) failures.push(`${prefix}: missing LearnPyTorch teaching reference`);
-  if (!lesson.references?.some((reference) => reference.type === "Official PyTorch" && reference.url.includes("pytorch.org"))) failures.push(`${prefix}: missing official PyTorch reference`);
-  for (const mapping of lesson.notebookLinks || []) if (!catalog.notebooks.some((notebook) => notebook.slug === mapping.slug && notebook.chapter === lesson.chapter)) failures.push(`${prefix}: invalid notebook mapping ${mapping.slug}`);
+  for (const reference of lesson.references || []) {
+    try {
+      const url = new URL(reference.url);
+      if (url.protocol !== "https:") failures.push(`${prefix}: reference must use HTTPS: ${reference.url}`);
+      if (reference.type === "Official PyTorch" && url.hostname !== "pytorch.org" && !url.hostname.endsWith(".pytorch.org")) failures.push(`${prefix}: official reference is not on a PyTorch domain: ${reference.url}`);
+    } catch { failures.push(`${prefix}: invalid reference URL ${reference.url}`); }
+    if (!reference.type || !reference.title) failures.push(`${prefix}: incomplete reference`);
+  }
+  if (!lesson.references?.some((reference) => reference.type === "Official PyTorch")) failures.push(`${prefix}: missing official PyTorch reference`);
+  const expectedNotebookSlugs = catalog.notebooks.filter((notebook) => notebook.chapter === lesson.chapter).map((notebook) => notebook.slug).sort();
+  const mappedNotebookSlugs = (lesson.notebookLinks || []).map((mapping) => mapping.slug).sort();
+  if (JSON.stringify(expectedNotebookSlugs) !== JSON.stringify(mappedNotebookSlugs)) failures.push(`${prefix}: notebook mappings must cover the chapter exactly`);
+  for (const mapping of lesson.notebookLinks || []) {
+    if (!mapping.reason) failures.push(`${prefix}: notebook mapping ${mapping.slug} needs a reason`);
+    if (mapping.status === "historical" && !mapping.runtime) failures.push(`${prefix}: historical notebook ${mapping.slug} needs a runtime note`);
+  }
 }
 for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", "audit.json", "assets/styles.css", "assets/app.js"]) {
   try { await access(path.join(dist, file)); } catch { failures.push(`Missing dist/${file}`); }
