@@ -1,0 +1,177 @@
+{
+  "chapter": 13,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 210,
+  "outcomes": [
+    "Trace a 3D candidate batch through a convolutional classifier and account for every tensor dimension.",
+    "Implement training and validation loops that use logits, gradients, modes, and aggregate metrics correctly.",
+    "Use a tiny-subset overfit test to distinguish model bugs from generalization problems.",
+    "Train with current AMP APIs, save restartable state_dict checkpoints, and evaluate torch.compile only after eager parity."
+  ],
+  "sections": [
+    {
+      "id": "classifier-contract",
+      "title": "Start from the batch-to-logit contract",
+      "summary": "A classifier is easier to debug when each axis and output meaning is fixed before architecture choices.",
+      "body": [
+        "A 3D convolution expects candidate tensors shaped [batch, channel, depth, height, width]. The binary classifier may return two logits per candidate or one logit for a BCE objective; choose one representation and keep labels and metrics consistent with it. The book pipeline uses candidate metadata for analysis but only the image tensor enters the network.",
+        "Run one batch through the model before creating an optimizer. Assert finite inputs and logits, label range, output shape, and a scalar loss. This one-batch contract localizes most dtype, channel, and flatten-size mistakes."
+      ],
+      "points": [
+        "Image inputs are floating point; class-index targets for cross-entropy are torch.long.",
+        "CrossEntropyLoss receives unnormalized logits shaped [B, classes].",
+        "Series UID and center remain beside predictions for later error analysis.",
+        "The model and input must share device and compatible dtype."
+      ],
+      "code": {
+        "title": "Assert one batch before training",
+        "language": "python",
+        "source": "import torch\n\ndef check_classifier_batch(model, batch, device):\n    \"\"\"Validate an injected batch and model before optimization.\"\"\"\n    images = batch[\"image\"].to(device, dtype=torch.float32)\n    labels = batch[\"label\"].to(device, dtype=torch.long)\n    if images.ndim != 5 or images.shape[1] != 1:\n        raise ValueError(\"expected images shaped [B, 1, D, H, W]\")\n    if not bool(torch.isfinite(images).all()):\n        raise ValueError(\"images contain a non-finite value\")\n    if labels.shape != (images.shape[0],):\n        raise ValueError(\"expected one class index per image\")\n    if not bool(((labels == 0) | (labels == 1)).all()):\n        raise ValueError(\"labels must be 0 or 1\")\n\n    logits = model(images)\n    if logits.shape != (images.shape[0], 2):\n        raise ValueError(\"model must return two logits per image\")\n    if not bool(torch.isfinite(logits).all()):\n        raise ValueError(\"logits contain a non-finite value\")\n    loss = torch.nn.functional.cross_entropy(logits, labels)\n    if loss.ndim != 0:\n        raise ValueError(\"loss must be scalar\")\n    return loss"
+      }
+    },
+    {
+      "id": "three-dimensional-model",
+      "title": "Read the 3D CNN as a sequence of shape changes",
+      "summary": "Channels expand while spatial dimensions contract, leaving a compact representation for classification.",
+      "body": [
+        "A typical block applies Conv3d, normalization, activation, and pooling. Record [C, D, H, W] after every block instead of memorizing a final Linear input size. Adaptive pooling can make the head less brittle when an intentional input-size change is allowed by the project contract.",
+        "BatchNorm3d uses batch statistics in training and stored running statistics in evaluation, while dropout becomes inactive in evaluation. GroupNorm and LayerNorm do not keep BatchNorm-style running statistics. model.train() and model.eval() select module behavior but do not control autograd, so validation also needs no_grad or inference_mode."
+      ],
+      "code": {
+        "title": "A head independent of exact crop extent",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nfeature_channels = 16\nfeatures = torch.randn(2, feature_channels, 4, 8, 8)\nhead = nn.Sequential(\n    nn.AdaptiveAvgPool3d(1),\n    nn.Flatten(),\n    nn.Linear(feature_channels, 2),\n)\nlogits = head(features)\nassert logits.shape == (features.shape[0], 2)"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Adaptive pooling is a contract decision",
+          "body": "It prevents a shape-specific Linear layer, but it does not mean arbitrary crop geometry is semantically valid. Preprocessing must still match training."
+        }
+      ]
+    },
+    {
+      "id": "training-step",
+      "title": "Make the optimization step explicit",
+      "summary": "Zero gradients, predict, measure error, backpropagate, and update in a consistent order.",
+      "body": [
+        "Set the model to training mode once per training phase. Move each batch, clear old gradients, compute logits and loss, run backward, and call optimizer.step. Accumulate detached loss sums rather than graph-connected tensors, otherwise an epoch metric can retain every computation graph. Converting every CUDA loss with item() also synchronizes each batch, so a throughput-sensitive loop can keep a detached device sum and convert once per reporting interval.",
+        "Use validation mode with model.eval() and torch.inference_mode(), but compute the same loss and prediction semantics. Aggregate numerators and denominators over the entire dataset; averaging per-batch percentages gives the last small batch disproportionate weight."
+      ],
+      "code": {
+        "title": "A minimal eager training step",
+        "language": "python",
+        "source": "def train_step(model, optimizer, loss_fn, images, labels):\n    \"\"\"Return detached batch statistics for an outer epoch loop.\"\"\"\n    model.train()\n    optimizer.zero_grad(set_to_none=True)\n    logits = model(images)\n    loss = loss_fn(logits, labels)\n    loss.backward()\n    optimizer.step()\n    loss_sum = loss.detach() * images.shape[0]\n    return loss_sum, images.shape[0]"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not softmax before cross-entropy",
+          "body": "CrossEntropyLoss combines log-softmax and negative log likelihood. Supply raw logits; derive probabilities only for reporting."
+        }
+      ]
+    },
+    {
+      "id": "overfit-debugging",
+      "title": "Prove the system can memorize a tiny subset",
+      "summary": "A small-batch overfit test is a high-value integration test for data, labels, model, loss, and updates.",
+      "body": [
+        "Freeze a handful of candidates containing both classes and train repeatedly on exactly those tensors with augmentation disabled. A sufficiently capable model should drive training loss very low. If it cannot, inspect target alignment, learning rate, gradient norms, train/eval mode, and whether parameters change after optimizer.step.",
+        "This test does not measure generalization and must not be reported as model quality. Its purpose is to replace a vague full-run failure with a small deterministic case that can be examined layer by layer."
+      ],
+      "points": [
+        "Use fixed identities and no stochastic augmentation.",
+        "Log initial and final loss plus predicted probabilities.",
+        "Check at least one parameter before and after an update.",
+        "Keep the test available as a fast regression check."
+      ]
+    },
+    {
+      "id": "amp-and-throughput",
+      "title": "Add mixed precision after the FP32 loop is correct",
+      "summary": "AMP can reduce runtime and memory, but it changes numerical execution and requires a convergence comparison.",
+      "body": [
+        "On CUDA, enter torch.autocast around the forward pass and loss, then use torch.amp.GradScaler for float16 gradients. Backward runs outside the autocast context. If gradient clipping is required, unscale the optimizer before clipping.",
+        "Measure examples per second and peak memory after warm-up, but also compare losses and validation metrics against FP32. Small 3D models or input pipelines may be CPU-bound, so reduced precision is not guaranteed to accelerate the end-to-end run."
+      ],
+      "code": {
+        "title": "Current float16 AMP pattern",
+        "language": "python",
+        "source": "import torch\n\ndef make_amp_scaler(device):\n    return torch.amp.GradScaler(\n        \"cuda\", enabled=device.type == \"cuda\",\n    )\n\ndef amp_train_step(\n    model, optimizer, loss_fn, scaler, images, labels,\n):\n    \"\"\"Run one CUDA-float16 AMP step with injected state.\"\"\"\n    model.train()\n    optimizer.zero_grad(set_to_none=True)\n    use_amp = images.device.type == \"cuda\"\n    with torch.autocast(\n        device_type=images.device.type,\n        dtype=torch.float16,\n        enabled=use_amp,\n    ):\n        logits = model(images)\n        loss = loss_fn(logits, labels)\n    scaler.scale(loss).backward()\n    scaler.step(optimizer)\n    scaler.update()\n    return loss.detach()"
+      }
+    },
+    {
+      "id": "checkpoint-and-compile",
+      "title": "Make runs restartable before making them faster",
+      "summary": "A trustworthy checkpoint restores training state, while compilation is verified against the eager model on representative inputs.",
+      "body": [
+        "Save a dictionary containing model, optimizer, scheduler, and GradScaler state_dicts, epoch, best validation decision, split revision, and the random-generator state needed by the next batch. Keep arbitrary configuration objects in adjacent JSON; a weights_only=True checkpoint should contain tensors, primitive values, and plain containers. Load only trusted files, use map_location, and recreate the model and optimizer in code before loading their state.",
+        "After eager tests pass, create a compiled model and compare eager and compiled logits in evaluation mode. Warm the compiled path before timing and monitor graph breaks or recompilation. This lesson compiles evaluation only; PyTorch 2.13 documents additional backward-autocast semantics for compiled AMP training. Compilation is an optimization of the same experiment, not evidence that the experiment is correct."
+      ],
+      "code": {
+        "title": "Load a trusted state-dictionary checkpoint",
+        "language": "python",
+        "source": "import torch\n\ndef load_training_checkpoint(\n    checkpoint_path, model, optimizer, *, scheduler=None, scaler=None,\n):\n    \"\"\"Load trusted plain state dictionaries into rebuilt objects.\"\"\"\n    checkpoint = torch.load(\n        checkpoint_path,\n        map_location=\"cpu\",\n        weights_only=True,\n    )\n    model.load_state_dict(checkpoint[\"model\"])\n    optimizer.load_state_dict(checkpoint[\"optimizer\"])\n    if scheduler is not None:\n        scheduler.load_state_dict(checkpoint[\"scheduler\"])\n    if scaler is not None:\n        scaler.load_state_dict(checkpoint[\"scaler\"])\n    start_epoch = int(checkpoint[\"epoch\"]) + 1\n    return start_epoch, checkpoint.get(\"best_validation\")"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Never load an untrusted checkpoint",
+          "body": "weights_only narrows the accepted object types but is not a reason to treat unknown model files as safe. Verify provenance and integrity before loading."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Mixed precision",
+      "book": "The readable baseline training loop uses ordinary floating-point execution.",
+      "current": "Use torch.autocast and torch.amp.GradScaler",
+      "reason": "These are the current device-oriented AMP entry points in PyTorch 2.13; torch.cuda.amp aliases are deprecated. Correct FP32 behavior remains the baseline."
+    },
+    {
+      "topic": "Checkpoint loading",
+      "book": "The project saves model progress to continue training and evaluate later.",
+      "current": "Save state_dicts and load trusted dictionaries with weights_only=True",
+      "reason": "This avoids depending on a pickled model class, supports explicit reconstruction, and reduces the object types accepted during deserialization."
+    },
+    {
+      "topic": "Compilation",
+      "book": "The training application executes the model eagerly for clarity.",
+      "current": "Apply torch.compile only after eager output and gradient tests",
+      "reason": "Compilation can improve performance but introduces guards, graph breaks, first-call cost, and possible recompilation that need separate measurement."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch13--sandbox", "reason": "Inspect LunaTrainingApp, a real training batch, loss computation, gradients, optimizer behavior, and data-loading timing."},
+    {"slug": "p2_run_everything", "reason": "Run the medical-imaging pipeline in sequence after the individual data and training contracts have been checked."}
+  ],
+  "exercises": [
+    {
+      "title": "Overfit sixteen candidates",
+      "prompt": "Freeze a balanced subset, disable augmentation, and train until loss is near zero. Log probabilities, gradient norm, and one parameter delta; diagnose the system if it cannot memorize.",
+      "success": "the fixed subset is memorized and the report shows labels, gradients, and parameters all participate in learning"
+    },
+    {
+      "title": "Compare FP32 and AMP",
+      "prompt": "From the same initial state, run matched FP32 and AMP trials. Report loss curves, examples per second, peak memory, and validation predictions on fixed examples.",
+      "success": "the comparison includes warm-up, identical data order, current AMP APIs, and an explicit numerical tolerance or quality conclusion"
+    },
+    {
+      "title": "Verify controlled resume behavior",
+      "prompt": "Within one documented PyTorch/device environment, save after an optimizer step and include model, optimizer, scheduler, scaler, CPU and active-accelerator RNG, Python/NumPy RNG when used, and the DataLoader generator or next-batch identity. Rebuild and restore every object, feed the same next batch, and compare with an uninterrupted control run.",
+      "success": "the same next batch is verified and model parameters plus optimizer-dependent next-step results match the control within justified tolerances; any nondeterministic kernel limitation is reported"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "Optimizing model parameters", "url": "https://docs.pytorch.org/tutorials/beginner/basics/optimization_tutorial.html"},
+    {"type": "Official PyTorch", "title": "Automatic mixed precision", "url": "https://docs.pytorch.org/docs/2.13/amp.html"},
+    {"type": "Official PyTorch", "title": "torch.load", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.load.html"},
+    {"type": "Official PyTorch", "title": "Reproducibility", "url": "https://docs.pytorch.org/docs/2.13/notes/randomness.html"},
+    {"type": "Official PyTorch", "title": "torch.compile", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.compile.html"},
+    {"type": "Official PyTorch", "title": "Saving and loading models", "url": "https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html"},
+    {"type": "Official PyTorch", "title": "TensorBoard with PyTorch", "url": "https://docs.pytorch.org/tutorials/recipes/recipes/tensorboard_with_pytorch.html"}
+  ]
+}
