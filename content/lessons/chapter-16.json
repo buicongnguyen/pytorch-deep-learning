@@ -1,0 +1,206 @@
+{
+  "chapter": 16,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 240,
+  "outcomes": [
+    "Explain rank, world size, process group, backend, and collective operations without relying on one machine layout.",
+    "Launch a one-process-per-accelerator DDP job with torchrun, a DistributedSampler, and rank-aware checkpointing.",
+    "Use DeviceMesh to describe named parallel dimensions consistently on every rank.",
+    "Apply FSDP2 bottom-up and distinguish data, fully sharded, tensor, and pipeline parallelism by what they partition.",
+    "Design distributed correctness tests that detect wrong global-batch semantics, duplicate samples, and mismatched collectives."
+  ],
+  "sections": [
+    {
+      "id": "process-model",
+      "title": "Think in ranks before thinking in GPUs",
+      "summary": "Distributed PyTorch runs one program in multiple processes, each with a rank and a shared view of world size.",
+      "body": [
+        "A process group connects ranks that participate in communication. Global rank identifies a process in the whole job, local rank identifies its device on one host, and world size counts participating processes. The same Python file normally runs on every rank, so rank-conditional behavior must be deliberate.",
+        "Backends implement communication for particular devices and platforms. Gloo is useful for CPU demonstrations, while NCCL is the normal CUDA backend. Initialization, collective order, tensor shape, and dtype must agree across ranks; disagreement often appears as a hang rather than a friendly exception."
+      ],
+      "points": [
+        "Rank is a process identity, not automatically a device index across hosts.",
+        "Local rank selects a device on the current host.",
+        "World size and rendezvous information must agree.",
+        "Every successful job destroys the process group during cleanup."
+      ],
+      "code": {
+        "title": "Read launch metadata explicitly",
+        "language": "python",
+        "source": "import os\nimport torch\nimport torch.distributed as dist\n\ndef main():\n    local_rank = int(os.environ[\"LOCAL_RANK\"])\n    if torch.cuda.is_available():\n        device = torch.device(\"cuda\", local_rank)\n        torch.cuda.set_device(device)\n        dist.init_process_group(backend=\"nccl\", device_id=device)\n    else:\n        device = torch.device(\"cpu\")\n        dist.init_process_group(backend=\"gloo\")\n\n    try:\n        print({\n            \"rank\": dist.get_rank(),\n            \"world_size\": dist.get_world_size(),\n            \"device\": str(device),\n        })\n    finally:\n        dist.destroy_process_group()\n\nif __name__ == \"__main__\":\n    main()"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Notebook kernels are the wrong launcher",
+          "body": "Use the notebook for concepts, then run multi-process examples as scripts with torchrun. Repeatedly initialized notebook process groups are difficult to clean up correctly."
+        }
+      ]
+    },
+    {
+      "id": "collective-contracts",
+      "title": "Learn collectives as synchronized tensor contracts",
+      "summary": "Broadcast distributes one source tensor; all-reduce combines values from every rank and returns the result to each.",
+      "body": [
+        "In a broadcast, the source rank owns meaningful initial data and all participants provide compatible receive tensors. In an all-reduce sum, every rank contributes and receives the global sum. Barriers coordinate progress but do not repair mismatched collective order.",
+        "Use tiny known tensors to predict results by hand. Log rank before and after each call, enable distributed debugging when needed, and add timeouts in test environments. If rank 0 calls broadcast while rank 1 calls all_reduce, the program is incorrect even when tensor shapes happen to match."
+      ],
+      "code": {
+        "title": "Verify an all-reduce invariant",
+        "language": "python",
+        "source": "import torch\nimport torch.distributed as dist\n\ndef verify_rank_sum(device):\n    if not dist.is_initialized():\n        raise RuntimeError(\"launch this function inside an initialized torchrun job\")\n    rank = dist.get_rank()\n    world_size = dist.get_world_size()\n    value = torch.tensor(float(rank), device=device)\n    dist.all_reduce(value, op=dist.ReduceOp.SUM)\n    expected = world_size * (world_size - 1) / 2\n    torch.testing.assert_close(value, torch.tensor(expected, device=device))\n    return value.item()"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Communication is ordered",
+          "body": "Collectives are not messages that PyTorch matches by name. All ranks in a group must enter compatible operations in compatible order."
+        }
+      ]
+    },
+    {
+      "id": "torchrun-ddp",
+      "title": "Scale the eager training loop with DDP",
+      "summary": "DistributedDataParallel replicates the model and synchronizes gradients; it does not partition the input dataset automatically.",
+      "body": [
+        "Launch one process per accelerator with torchrun, move the model to the local device, and wrap it with DistributedDataParallel. During backward, DDP groups gradient communication so replicas receive synchronized gradients before each optimizer step. Every rank normally holds its own optimizer over its local replica.",
+        "DistributedSampler partitions indices across ranks, but its default drop_last=False pads with duplicate indices when the dataset size is not divisible by world size. Setting drop_last=True avoids padding by omitting a tail instead. Choose and record that tradeoff, call sampler.set_epoch(epoch) so shuffling changes deterministically, and preserve equivalent global-batch semantics when comparing against a single-process baseline. Only a designated rank should write an ordinary shared checkpoint."
+      ],
+      "code": {
+        "title": "A DDP data boundary",
+        "language": "python",
+        "source": "import torch.distributed as dist\nfrom torch.nn.parallel import DistributedDataParallel as DDP\nfrom torch.utils.data import DataLoader, DistributedSampler\n\ndef train_with_ddp(\n    model, train_dataset, device, epochs, local_batch_size, train_step\n):\n    if not dist.is_initialized():\n        raise RuntimeError(\"initialize the process group before constructing DDP\")\n    sampler = DistributedSampler(\n        train_dataset, shuffle=True, seed=31, drop_last=False\n    )  # May pad duplicate indices; record this choice.\n    loader = DataLoader(\n        train_dataset, batch_size=local_batch_size, sampler=sampler\n    )\n    ddp_kwargs = {\"device_ids\": [device.index]} if device.type == \"cuda\" else {}\n    model = DDP(model.to(device), **ddp_kwargs)\n\n    for epoch in range(epochs):\n        sampler.set_epoch(epoch)\n        for images, labels in loader:\n            train_step(model, images.to(device), labels.to(device))\n    return model"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Local batch is not global batch",
+          "body": "With N ranks, local batch B usually produces global batch N×B. Adjust the comparison or learning-rate experiment explicitly instead of claiming DDP changed convergence by itself."
+        }
+      ]
+    },
+    {
+      "id": "device-mesh",
+      "title": "Name the dimensions of a parallel layout",
+      "summary": "DeviceMesh represents an N-dimensional arrangement of ranks and lets later APIs communicate along named dimensions.",
+      "body": [
+        "A two-dimensional mesh might name one axis dp for replicated or sharded data parallelism and another tp for tensor parallelism. Slicing mesh[\"tp\"] yields the group along which model tensors are partitioned, while mesh[\"dp\"] can identify replicas of those partitions.",
+        "Every rank must construct the same mesh and dimension names. A mismatch can silently hang. DeviceMesh in PyTorch 2.13 supports CPU and CUDA or CUDA-like device types, not the abstract meta device. Build and print a small CPU/Gloo mesh under torchrun to understand indexing, then use init_device_mesh in a real job where world size equals the product of mesh dimensions."
+      ],
+      "code": {
+        "title": "Create a named two-dimensional mesh",
+        "language": "python",
+        "source": "import torch.distributed as dist\nfrom torch.distributed.device_mesh import init_device_mesh\n\ndef make_parallel_mesh(\n    data_parallel_size, tensor_parallel_size, device_type=\"cuda\"\n):\n    if device_type not in {\"cpu\", \"cuda\"}:\n        raise ValueError(\"this lesson demonstrates CPU or CUDA DeviceMesh\")\n    if not dist.is_initialized():\n        raise RuntimeError(\"launch every rank with torchrun before creating the mesh\")\n    mesh_world_size = data_parallel_size * tensor_parallel_size\n    if mesh_world_size != dist.get_world_size():\n        raise ValueError(\"mesh dimensions must multiply to world size\")\n\n    mesh = init_device_mesh(\n        device_type,\n        mesh_shape=(data_parallel_size, tensor_parallel_size),\n        mesh_dim_names=(\"dp\", \"tp\"),\n    )\n    return mesh, mesh[\"tp\"], mesh[\"dp\"]"
+      }
+    },
+    {
+      "id": "fsdp2",
+      "title": "Shard parameters, gradients, and optimizer state with FSDP2",
+      "summary": "FSDP2 uses DTensor-based per-parameter sharding and all-gathers parameter groups only when computation needs them.",
+      "body": [
+        "DDP replicates the complete model on every rank, so model state can exceed one accelerator's memory. FSDP2 fully_shard partitions parameters, gradients, and optimizer state across a mesh. Before a module executes it all-gathers parameters; after computation it can reshard and free the full representation.",
+        "Apply fully_shard bottom-up to repeated layers, then to the root module. Each application defines a communication group, enabling overlap between one layer's computation and the next layer's parameter all-gather. Construct the optimizer after sharding so it sees DTensor parameters. Use distributed checkpoint tooling for scalable state rather than gathering every large tensor on every rank."
+      ],
+      "code": {
+        "title": "Apply FSDP2 bottom-up",
+        "language": "python",
+        "source": "import torch\nfrom torch.distributed.fsdp import fully_shard\n\ndef shard_with_fsdp2(model, repeated_layers, dp_mesh, learning_rate=3e-4):\n    for layer in repeated_layers:\n        fully_shard(layer, mesh=dp_mesh)\n    fully_shard(model, mesh=dp_mesh)\n\n    # Construct the optimizer after sharding so it sees DTensor parameters.\n    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)\n    # Call model(inputs), not model.forward(inputs), so FSDP hooks execute.\n    return model, optimizer"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "FSDP1 and FSDP2 are different APIs",
+          "body": "The companion script may demonstrate FullyShardedDataParallel. New course material targets FSDP2 fully_shard and labels the wrapper-based example as FSDP1 context."
+        }
+      ]
+    },
+    {
+      "id": "tensor-and-pipeline",
+      "title": "Partition model width or execution stages when data parallelism is insufficient",
+      "summary": "Tensor parallelism shards compatible operations; pipeline parallelism assigns model stages and microbatches to different ranks.",
+      "body": [
+        "PyTorch tensor parallelism builds on DTensor and a one-dimensional DeviceMesh slice. Colwise and Rowwise styles partition compatible Linear or Embedding operations and insert the required redistribution. The API is experimental, so pin the PyTorch version and begin with a tiny module whose distributed result can be reconstructed and checked.",
+        "torch.distributed.pipelining partitions execution into stages and schedules microbatches through them. The package is alpha in PyTorch 2.13. Static stage input/output shapes, balanced stage time, and schedule choice affect correctness and utilization. Pipeline and tensor parallelism can compose with FSDP or DDP, but each added dimension increases checkpoint and debugging complexity."
+      ],
+      "points": [
+        "Data parallelism partitions examples while replicating or sharding model state.",
+        "Tensor parallelism partitions tensors and operations inside a layer.",
+        "Pipeline parallelism partitions sequential model execution.",
+        "A hybrid design needs named mesh dimensions and an explicit checkpoint plan."
+      ]
+    },
+    {
+      "id": "distributed-review",
+      "title": "Test distributed semantics, not only throughput",
+      "summary": "A job that runs without hanging can still train on duplicates, average losses incorrectly, or save incomplete state.",
+      "body": [
+        "Compare one update against a single-process reference using equivalent global inputs. Gather sample identities to verify expected coverage, check that replicated parameters match after DDP updates, and reduce metric numerators and denominators before calculating ratios. Make logs rank-aware and include world size and mesh in every run manifest.",
+        "Benchmark after correctness: warm up kernels, synchronize devices, separate data-loading time, and report scaling efficiency rather than only total throughput. Test restart with the same world size first, then document whether the checkpoint format supports resharding to a different topology."
+      ],
+      "code": {
+        "title": "Reduce counts before computing a metric",
+        "language": "python",
+        "source": "import torch\nimport torch.distributed as dist\n\ndef reduce_accuracy(correct_local, examples_local, device):\n    if not dist.is_initialized():\n        raise RuntimeError(\"initialize the process group before reducing metrics\")\n    counts = torch.tensor(\n        [correct_local, examples_local], device=device, dtype=torch.float64\n    )\n    dist.all_reduce(counts, op=dist.ReduceOp.SUM)\n    examples = int(counts[1].item())\n    if examples == 0:\n        raise ValueError(\"global metric denominator is zero\")\n    result = {\"accuracy\": (counts[0] / counts[1]).item(), \"examples\": examples}\n    if dist.get_rank() == 0:\n        print(result)\n    return result"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Launching",
+      "book": "The scripts demonstrate multiprocessing, explicit stores, environment variables, and torchrun to expose initialization.",
+      "current": "Use torchrun for real jobs and retain manual setup as a learning mechanism",
+      "reason": "torchrun supplies rank and rendezvous environment consistently and supports restart-oriented distributed workflows."
+    },
+    {
+      "topic": "Sharded data parallelism",
+      "book": "A companion example uses the FullyShardedDataParallel wrapper.",
+      "current": "Teach FSDP2 through torch.distributed.fsdp.fully_shard",
+      "reason": "FSDP2 uses DTensor-based per-parameter sharding, preserves module structure, and is the current path recommended for new material."
+    },
+    {
+      "topic": "Topology",
+      "book": "DeviceMesh introduces a structured view of data and pipeline dimensions.",
+      "current": "Use named DeviceMesh dimensions across FSDP2 and tensor parallel plans",
+      "reason": "Named slices make communication groups explicit, but the mesh must be identical on every rank to avoid silent hangs."
+    },
+    {
+      "topic": "Model parallel APIs",
+      "book": "The scripts build model, tensor, and pipeline examples from increasingly capable primitives.",
+      "current": "Label tensor parallel experimental and distributed.pipelining alpha",
+      "reason": "The official PyTorch 2.13 documentation warns that these APIs can change; course examples must pin their environment."
+    }
+  ],
+  "notebookLinks": [
+    {"slug": "p2ch16--1_motivator", "reason": "Use a simple concurrency example to separate parallel work from distributed gradient training."},
+    {"slug": "p2ch16--device_mesh", "reason": "Inspect mesh shape, dimension names, and submesh selection before running multi-process scripts."}
+  ],
+  "exercises": [
+    {
+      "title": "Prove collective results",
+      "prompt": "Launch four ranks and test broadcast plus all-reduce on values with hand-calculated results. Add a timeout and rank-aware logs, then deliberately mismatch tensor shapes in a separate expected-failure test.",
+      "success": "the valid job matches exact expected tensors and the failure case is diagnosed from logs without leaving orphaned process groups"
+    },
+    {
+      "title": "Match a DDP update",
+      "prompt": "Construct one global batch, split it over two DDP ranks, and compare one optimizer update with a single-process model using the full batch and identical initialization.",
+      "success": "parameters match within tolerance and the explanation accounts for loss reduction, local batch, global batch, and sampler behavior"
+    },
+    {
+      "title": "Design a hybrid mesh",
+      "prompt": "For eight accelerators, define a named mesh and choose DDP or FSDP2, tensor parallelism, and optional pipeline stages for a model that does not fit one device. State what is sharded, communicated, and checkpointed along each dimension.",
+      "success": "the mesh product equals world size and the plan includes correctness tests, API stability labels, and a restart strategy"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "torch.distributed and DeviceMesh", "url": "https://docs.pytorch.org/docs/stable/distributed"},
+    {"type": "Official PyTorch", "title": "Data loading and DistributedSampler", "url": "https://docs.pytorch.org/docs/stable/data.html"},
+    {"type": "Official PyTorch", "title": "Getting started with DistributedDataParallel", "url": "https://docs.pytorch.org/tutorials/intermediate/ddp_tutorial.html"},
+    {"type": "Official PyTorch", "title": "Getting started with FSDP2", "url": "https://docs.pytorch.org/tutorials/intermediate/FSDP_tutorial.html"},
+    {"type": "Official PyTorch", "title": "FSDP2 fully_shard API", "url": "https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html"},
+    {"type": "Official PyTorch", "title": "Distributed checkpoint recipe", "url": "https://docs.pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html"},
+    {"type": "Official PyTorch", "title": "Tensor parallelism", "url": "https://docs.pytorch.org/docs/stable/distributed.tensor.parallel.html"},
+    {"type": "Official PyTorch", "title": "Pipeline parallelism", "url": "https://docs.pytorch.org/docs/stable/distributed.pipelining.html"}
+  ]
+}
