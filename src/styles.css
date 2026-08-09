@@ -157,10 +157,10 @@ h1, h2, h3, p { margin-top: 0; }
 .lesson-callout p { margin: .35rem 0 0; color: var(--muted); font-size: .84rem; }
 .version-review, .notebook-mapping, .exercise-section, .reference-section { padding: 5rem 0; border-bottom: 1px solid var(--line); }
 .version-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .8rem; }
-.version-grid article { padding: 1.25rem; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.version-grid article { min-width: 0; padding: 1.25rem; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .version-grid span, .reference-section li span { color: var(--accent); font-size: .6rem; text-transform: uppercase; letter-spacing: .1em; }
-.version-grid h3 { margin: .45rem 0 .8rem; font-size: 1.05rem; }
-.version-grid p { margin-bottom: .55rem; color: var(--muted); font-size: .78rem; }
+.version-grid h3 { margin: .45rem 0 .8rem; overflow-wrap: anywhere; font-size: 1.05rem; }
+.version-grid p { margin-bottom: .55rem; overflow-wrap: anywhere; color: var(--muted); font-size: .78rem; }
 .notebook-mapping ul, .reference-section ul { display: grid; gap: .65rem; padding: 0; margin: 0; list-style: none; }
 .notebook-mapping a, .reference-section a { display: grid; grid-template-columns: 1fr auto; gap: .25rem 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); text-decoration: none; }
 .notebook-mapping a:hover, .reference-section a:hover { border-color: var(--accent-2); }
