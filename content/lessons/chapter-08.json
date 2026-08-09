@@ -1,0 +1,263 @@
+{
+  "chapter": 8,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 180,
+  "outcomes": [
+    "Calculate channel and spatial shapes through convolution, activation, pooling, and classification layers.",
+    "Explain local receptive fields and parameter sharing by comparing hand-authored filters with learned kernels.",
+    "Build a convolutional classifier that avoids brittle fixed flatten dimensions.",
+    "Evaluate normalization and residual connections, then measure AMP or compilation only after establishing an eager float32 baseline."
+  ],
+  "sections": [
+    {
+      "id": "local-filters",
+      "title": "See convolution as a local shared operation",
+      "summary": "One kernel examines nearby values and reuses the same parameters across spatial locations.",
+      "body": [
+        "A dense layer connects every input value to every output feature. A convolution instead applies a small kernel at many positions. The shared kernel makes the parameter count independent of image width and height and encodes the useful assumption that a local pattern can matter wherever it appears.",
+        "PyTorch implements the operation as cross-correlation, which is the convention used by Conv2d. The layer learns kernel values during training; hand-authored edge and blur kernels reveal what a feature map represents before learning begins."
+      ],
+      "code": {
+        "title": "Apply a fixed edge kernel",
+        "language": "python",
+        "source": "import torch\nimport torch.nn.functional as F\n\nimage = torch.rand(1, 1, 16, 16)  # N, C, H, W\nedge = torch.tensor([\n    [-1.0, -1.0, -1.0],\n    [ 0.0,  0.0,  0.0],\n    [ 1.0,  1.0,  1.0],\n]).reshape(1, 1, 3, 3)\nresponse = F.conv2d(image, edge, padding=1)\nassert response.shape == image.shape"
+      },
+      "points": [
+        "Input layout is N × in_channels × H × W.",
+        "Kernel layout is out_channels × in_channels/groups × kH × kW.",
+        "Each output channel owns a bank of kernels across its input channels.",
+        "Bias contributes one learned scalar per output channel when enabled."
+      ]
+    },
+    {
+      "id": "shape-arithmetic",
+      "title": "Calculate every output shape",
+      "summary": "Kernel, padding, stride, and dilation determine spatial size; out_channels determines feature depth.",
+      "body": [
+        "For each spatial axis, Conv2d combines the input size with padding, dilation, kernel size, and stride. Padding can preserve size for an odd kernel with stride one, while stride greater than one subsamples the response.",
+        "Write the expected shape beside every layer before running the model. A forward hook or a small synthetic batch can then verify the calculation. This habit prevents the final Linear layer from becoming a trial-and-error constant."
+      ],
+      "code": {
+        "title": "Trace a convolution shape",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nlayer = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1)\nx = torch.randn(8, 3, 32, 32)\ny = layer(x)\nassert y.shape == (8, 16, 16, 16)\nprint(layer.weight.shape)  # 16, 3, 3, 3"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not reshape to swap axes",
+          "body": "reshape changes the logical grouping of storage; permute or movedim changes axis order."
+        }
+      ]
+    },
+    {
+      "id": "pooling-receptive-field",
+      "title": "Trade spatial detail for context",
+      "summary": "Pooling and strided operations shrink feature maps while later units depend on progressively larger input regions.",
+      "body": [
+        "Max pooling keeps the strongest value in a local window; average pooling summarizes the window. Downsampling reduces later computation and makes the effective receptive field grow, but too much early reduction can discard small features.",
+        "Track both tensor shape and receptive field conceptually. Two 3 × 3 convolutions with intervening nonlinearities do more than one local comparison: the second layer combines patterns found by the first over a wider region."
+      ],
+      "code": {
+        "title": "A shape-stable feature extractor",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nfeatures = nn.Sequential(\n    nn.Conv2d(3, 32, kernel_size=3, padding=1),\n    nn.ReLU(),\n    nn.MaxPool2d(2),\n    nn.Conv2d(32, 64, kernel_size=3, padding=1),\n    nn.ReLU(),\n    nn.MaxPool2d(2),\n)\n\nfeature_map = features(torch.randn(4, 3, 32, 32))\nassert feature_map.shape == (4, 64, 8, 8)"
+      }
+    },
+    {
+      "id": "adaptive-classifier",
+      "title": "Remove brittle flatten-size assumptions",
+      "summary": "Adaptive pooling creates a declared output geometry for any supported input height and width.",
+      "body": [
+        "A hard-coded Linear input such as 8 × 8 × 64 works only while every upstream spatial choice stays unchanged. AdaptiveAvgPool2d produces a requested output size independent of the input spatial dimensions, making the classifier boundary explicit.",
+        "Global average pooling to 1 × 1 summarizes each channel into one feature. It sharply reduces classifier parameters and lets the same model accept several image sizes, provided the preceding convolutions support them."
+      ],
+      "code": {
+        "title": "A size-tolerant CNN",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nclass ImageClassifier(nn.Module):\n    def __init__(self, classes: int = 2):\n        super().__init__()\n        self.features = nn.Sequential(\n            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),\n            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),\n        )\n        self.pool = nn.AdaptiveAvgPool2d(1)\n        self.classifier = nn.Linear(64, classes)\n\n    def forward(self, x):\n        x = self.pool(self.features(x))\n        return self.classifier(torch.flatten(x, 1))\n\nmodel = ImageClassifier()\nassert model(torch.randn(2, 3, 40, 48)).shape == (2, 2)"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "The model returns logits",
+          "body": "Keep the final Linear output unnormalized when training with CrossEntropyLoss."
+        }
+      ]
+    },
+    {
+      "id": "normalization-residuals",
+      "title": "Stabilize deeper paths and preserve identity",
+      "summary": "Batch normalization carries running state; residual blocks add a learned correction to a compatible shortcut.",
+      "body": [
+        "BatchNorm2d normalizes each channel using mini-batch statistics during training and maintains running statistics for evaluation by default. It is therefore both a computation and module state. model.train() and model.eval() must be selected deliberately.",
+        "A residual block returns shortcut + residual when their shapes match, giving the block a direct identity path. If spatial size or channel count changes, the shortcut needs an explicit projection. Test the addition shape rather than relying on broadcasting."
+      ],
+      "code": {
+        "title": "A shape-preserving residual block",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nclass ResidualBlock(nn.Module):\n    def __init__(self, channels: int):\n        super().__init__()\n        self.block = nn.Sequential(\n            nn.Conv2d(channels, channels, 3, padding=1, bias=False),\n            nn.BatchNorm2d(channels),\n            nn.ReLU(),\n            nn.Conv2d(channels, channels, 3, padding=1, bias=False),\n            nn.BatchNorm2d(channels),\n        )\n        self.activation = nn.ReLU()\n\n    def forward(self, x):\n        return self.activation(x + self.block(x))\n\n# Construct a new module on every iteration; list multiplication would tie weights.\nstack = nn.Sequential(*(ResidualBlock(16) for _ in range(3)))\nexample = torch.randn(2, 16, 8, 8)\nassert stack(example).shape == example.shape\nassert len({id(module) for module in stack}) == 3"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Evaluation mode affects BatchNorm",
+          "body": "inference_mode() disables gradient recording but does not switch BatchNorm from batch statistics to its evaluation behavior; call eval() as well."
+        },
+        {
+          "kind": "warning",
+          "title": "Do not multiply a list of modules",
+          "body": "The pinned convolution notebook uses n_blocks * [ResBlock(...)], which repeats one Python module instance and ties every block's parameters. Construct each block independently with a comprehension or generator, as in the corrected stack above."
+        }
+      ]
+    },
+    {
+      "id": "cnn-training",
+      "title": "Train the CNN with the same reviewed loop",
+      "summary": "Convolution changes the model, not the responsibilities of data, loss, autograd, optimizer, and validation.",
+      "body": [
+        "Reuse Chapter 7's separate training and validation loaders. Move the model and batches to the selected accelerator, return raw logits, and compute CrossEntropyLoss. Clear gradients before each backward pass and accumulate metrics from detached values.",
+        "Validation runs with fixed parameters under eval() and inference_mode(). Save the best state dictionary, not a whole Python model. Compare the CNN against the flattened MLP so the benefit of local structure is measured rather than assumed.",
+        "The standalone smoke step below uses a synthetic batch so its device, dtype, shape, loss, and update contracts can be checked without a download. Replace that batch with batches from Chapter 7's reviewed loader for the real experiment."
+      ],
+      "code": {
+        "title": "A device-neutral CNN step",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nclass ImageClassifier(nn.Module):\n    def __init__(self, classes: int = 2):\n        super().__init__()\n        self.features = nn.Sequential(\n            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),\n            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),\n        )\n        self.pool = nn.AdaptiveAvgPool2d(1)\n        self.classifier = nn.Linear(64, classes)\n\n    def forward(self, x):\n        x = self.pool(self.features(x))\n        return self.classifier(torch.flatten(x, 1))\n\ntorch.manual_seed(42)\naccelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\nmodel = ImageClassifier().to(device)\noptimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)\nloss_fn = nn.CrossEntropyLoss()\nimages = torch.randn(8, 3, 32, 32, device=device)\ntargets = torch.randint(0, 2, (8,), dtype=torch.long, device=device)\n\nmodel.train()\noptimizer.zero_grad(set_to_none=True)\nloss = loss_fn(model(images), targets)\nloss.backward()\noptimizer.step()\nassert torch.isfinite(loss).item()"
+      }
+    },
+    {
+      "id": "performance-extension",
+      "title": "Optimize only a measured baseline",
+      "summary": "AMP and torch.compile can improve supported workloads, but correctness and representative timing come first.",
+      "body": [
+        "Automatic mixed precision chooses operation-specific lower precision inside an autocast region. Current APIs live under torch.amp; the older torch.cuda.amp entry points are deprecated. Gradient scaling is commonly paired with float16 training to reduce underflow risk.",
+        "torch.compile may optimize a model or training step through graph capture and code generation. Warm-up, synchronize asynchronous devices when timing, and compare outputs and validation metrics with the eager float32 baseline. A small teaching model may not run faster after compilation overhead."
+      ],
+      "code": {
+        "title": "Guard and measure a CUDA AMP extension",
+        "language": "python",
+        "source": "from time import perf_counter\n\nimport torch\nfrom torch import nn\n\nclass ImageClassifier(nn.Module):\n    def __init__(self, classes: int = 2):\n        super().__init__()\n        self.features = nn.Sequential(\n            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),\n            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),\n        )\n        self.pool = nn.AdaptiveAvgPool2d(1)\n        self.classifier = nn.Linear(64, classes)\n\n    def forward(self, x):\n        x = self.pool(self.features(x))\n        return self.classifier(torch.flatten(x, 1))\n\nif not torch.cuda.is_available():\n    print(\"CUDA is unavailable; skipping this optional AMP measurement.\")\nelse:\n    device = torch.device(\"cuda\")\n    model = ImageClassifier().to(device)\n    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)\n    loss_fn = nn.CrossEntropyLoss()\n    images = torch.randn(256, 3, 32, 32, device=device)\n    targets = torch.randint(0, 2, (256,), dtype=torch.long, device=device)\n\n    # One current float16 AMP training step.\n    model.train()\n    scaler = torch.amp.GradScaler(\"cuda\")\n    optimizer.zero_grad(set_to_none=True)\n    with torch.amp.autocast(\"cuda\"):\n        logits = model(images)\n        loss = loss_fn(logits, targets)\n    scaler.scale(loss).backward()\n    scaler.step(optimizer)\n    scaler.update()\n\n    # Compare outputs before timing; lower precision is not bit-identical.\n    model.eval()\n    with torch.inference_mode():\n        float32_output = model(images)\n        with torch.amp.autocast(\"cuda\"):\n            amp_output = model(images)\n    torch.testing.assert_close(float32_output, amp_output.float(), rtol=5e-2, atol=5e-2)\n\n    def float32_inference():\n        with torch.inference_mode():\n            model(images)\n\n    def amp_inference():\n        with torch.inference_mode(), torch.amp.autocast(\"cuda\"):\n            model(images)\n\n    for _ in range(10):\n        float32_inference()\n        amp_inference()\n    torch.accelerator.synchronize()\n\n    iterations = 50\n    start = perf_counter()\n    for _ in range(iterations):\n        float32_inference()\n    torch.accelerator.synchronize()\n    float32_ms = (perf_counter() - start) * 1_000 / iterations\n\n    start = perf_counter()\n    for _ in range(iterations):\n        amp_inference()\n    torch.accelerator.synchronize()\n    amp_ms = (perf_counter() - start) * 1_000 / iterations\n    print({\"float32_ms\": float32_ms, \"amp_ms\": amp_ms})"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Enable only where supported",
+          "body": "This block explicitly requires CUDA and otherwise skips. Treat its timings as local measurements, repeat them on representative data, and retain eager float32 as the portable correctness reference."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Classifier shape",
+      "book": "The notebook derives and sometimes hard-codes the flattened feature count after convolution and pooling.",
+      "current": "Use AdaptiveAvgPool2d or infer the boundary from an example",
+      "reason": "The classifier contract becomes explicit and is less likely to break when input size or upstream spatial layers change."
+    },
+    {
+      "topic": "Accelerator selection",
+      "book": "Training code chooses CUDA directly when it is available.",
+      "current": "Use torch.accelerator and retain a CPU fallback",
+      "reason": "The same model can follow the current device abstraction across supported accelerator backends."
+    },
+    {
+      "topic": "Mixed precision",
+      "book": "The core convolution experiments use ordinary floating-point training.",
+      "current": "Use torch.amp APIs for an optional measured extension",
+      "reason": "torch.cuda.amp and torch.cpu.amp entry points are deprecated; the device-qualified torch.amp API is the current interface."
+    },
+    {
+      "topic": "Compilation",
+      "book": "The network runs eagerly.",
+      "current": "Compare torch.compile with an eager float32 baseline",
+      "reason": "Compilation can optimize supported graphs, but startup cost, graph breaks, device, and workload size determine whether it helps."
+    },
+    {
+      "topic": "Residual stacks",
+      "book": "The pinned notebook multiplies a one-element list containing a residual block.",
+      "current": "Construct a fresh ResidualBlock for every depth position",
+      "reason": "Python list multiplication repeats object references; using a comprehension or generator prevents unintended parameter sharing between blocks."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch8--1_convolution",
+      "reason": "Use the main notebook for fixed filters, Conv2d shape tracing, pooling, CNN training, device movement, deeper models, and residual connections."
+    },
+    {
+      "slug": "p1ch8--scratch",
+      "reason": "Review batch normalization and alternate architectures as controlled experiments rather than an unstructured appendix."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Prove the shape trace",
+      "prompt": "For a CNN with three convolutions and two pooling layers, calculate every N × C × H × W output before execution. Register forward hooks and compare the observed trace.",
+      "success": "all predicted shapes match and each change is explained by channels, kernel, padding, stride, or pooling"
+    },
+    {
+      "title": "Remove the fixed flatten size",
+      "prompt": "Refactor an upstream CNN to use AdaptiveAvgPool2d and test 32 × 32, 40 × 48, and 64 × 64 batches without changing the classifier.",
+      "success": "all three inputs return N × 2 logits and no feature count is hard-coded from one spatial resolution"
+    },
+    {
+      "title": "Run a fair architecture review",
+      "prompt": "Compare plain, batch-normalized, and residual CNNs using the same split, transforms, seed, optimizer budget, and evaluation function. Report parameter counts, loss curves, and per-class validation accuracy.",
+      "success": "the comparison controls non-architecture variables and supports its conclusion with both learning and validation evidence"
+    },
+    {
+      "title": "Benchmark compilation honestly",
+      "prompt": "Compile the selected eager model only after its outputs and validation metric are recorded. Check eager-versus-compiled output parity, record the first compiled call separately, warm both paths, synchronize the active accelerator around repeated timings, and report results without assuming a speedup. If the backend or toolchain is unavailable, record the supported skip instead of changing the model.",
+      "success": "the report separates compile latency from steady-state timing, uses representative repeated inputs and synchronization, verifies numerical and validation parity, and makes only evidence-backed performance claims"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Functional conv2d",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.conv2d.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Conv2d",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Conv2d.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "AdaptiveAvgPool2d",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.AdaptiveAvgPool2d.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "BatchNorm2d",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Module registration and duplicate instances",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Current accelerator",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.accelerator.current_accelerator.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Automatic mixed precision",
+      "url": "https://docs.pytorch.org/docs/stable/amp.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.compile",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"
+    }
+  ]
+}
