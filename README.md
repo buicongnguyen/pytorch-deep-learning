@@ -6,11 +6,18 @@ repository accompanying *Deep Learning with PyTorch, Second Edition*.
 The Atlas provides:
 
 - a seventeen-chapter learning roadmap;
+- original long-form lessons reviewed against PyTorch 2.13;
+- chapter tables of contents, runnable examples, update notes, and exercises;
 - a page for every upstream Jupyter notebook;
 - plain-language explanations for each code cell;
 - direct links to the pinned source and Google Colab;
 - search, dark mode, responsive navigation, and copyable code;
 - deterministic coverage and GitHub Pages deployment checks.
+
+The lesson format acknowledges [Learn PyTorch for Deep
+Learning](https://www.learnpytorch.io/) as a teaching reference. Current API
+guidance links to official PyTorch documentation, while the book notebooks stay
+pinned as the historical and executable code companion.
 
 The project does not reproduce the book's prose or commit the upstream
 notebooks. Notebook code is loaded from the pinned authoritative GitHub source

@@ -1,0 +1,180 @@
+{
+  "chapter": 1,
+  "minutes": 45,
+  "outcomes": [
+    "Describe a deep-learning experiment as data, model, loss, gradients, and an optimizer working together.",
+    "Verify a PyTorch 2.13 environment and choose an available accelerator without assuming CUDA.",
+    "Run notebook cells in a dependable order and recognize when hidden state makes a result misleading.",
+    "Read a tiny training step and identify where prediction, error measurement, differentiation, and parameter updates happen."
+  ],
+  "sections": [
+    {
+      "id": "learning-system",
+      "title": "See the whole learning system first",
+      "summary": "Deep learning is a feedback loop, not a mysterious collection of layers.",
+      "body": [
+        "A model receives numerical data and produces a prediction. A loss function turns the gap between that prediction and the desired target into one scalar. Automatic differentiation computes how each learnable parameter contributed to that scalar, and an optimizer makes a small corrective update.",
+        "Every later chapter expands one part of this loop. Tensors represent data, modules express models, autograd supplies gradients, and optimizers apply updates. Keeping the complete loop in view makes individual APIs easier to place."
+      ],
+      "points": [
+        "Data has a shape, dtype, device, and meaning.",
+        "A model maps inputs to predictions through parameterized operations.",
+        "A loss makes prediction quality measurable.",
+        "Gradients point toward parameter changes; the optimizer decides the step."
+      ],
+      "code": {
+        "title": "The five-part workflow",
+        "language": "python",
+        "source": "import torch\nfrom torch import nn\n\nx = torch.tensor([[1.0], [2.0], [3.0]])\ny = torch.tensor([[3.0], [5.0], [7.0]])\n\nmodel = nn.Linear(1, 1)\nloss_fn = nn.MSELoss()\noptimizer = torch.optim.SGD(model.parameters(), lr=0.05)\n\noptimizer.zero_grad(set_to_none=True)\nprediction = model(x)\nloss = loss_fn(prediction, y)\nloss.backward()\noptimizer.step()\n\nprint(f\"loss={loss.item():.4f}\")"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Read before optimizing",
+          "body": "The point of this preview is to identify the stages. Chapter 5 explains why the gradient and update actually reduce the loss."
+        }
+      ]
+    },
+    {
+      "id": "eager-workflow",
+      "title": "Use eager execution as your microscope",
+      "summary": "Ordinary Python control flow makes intermediate tensors inspectable while you learn.",
+      "body": [
+        "PyTorch executes tensor operations as Python reaches them. You can stop after any line, print a value, inspect a shape, or replace one operation and immediately see the result. That short experiment loop is one of the framework's greatest teaching advantages.",
+        "PyTorch 2.13 can compile models for performance, but compilation is not a prerequisite for correctness. Establish a working eager baseline first. Later, compare a compiled version against the same inputs, outputs, and measurements."
+      ],
+      "code": {
+        "title": "Inspect one operation at a time",
+        "language": "python",
+        "source": "features = torch.randn(4, 3)\nweights = torch.randn(3, 2)\nlogits = features @ weights\n\nprint(\"features\", features.shape, features.dtype)\nprint(\"weights \", weights.shape, weights.dtype)\nprint(\"logits  \", logits.shape, logits.grad_fn)"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Optional later step",
+          "body": "torch.compile() belongs after tests and representative benchmarks. Eager mode remains the clearest debugging baseline."
+        }
+      ]
+    },
+    {
+      "id": "environment-check",
+      "title": "Verify the environment, then choose a device",
+      "summary": "A two-minute smoke test prevents hours of debugging the wrong installation or accelerator assumption.",
+      "body": [
+        "Print the installed version, create a tensor, and run a small operation before downloading data or models. Current stable PyTorch requires Python 3.10 or later. Installation commands differ by operating system and compute platform, so use the official selector rather than copying a command from an old notebook.",
+        "Modern PyTorch exposes a backend-neutral accelerator API. It can represent CUDA, MPS, XPU, and other supported accelerators. Choose the detected accelerator when it is actually available and otherwise use the CPU."
+      ],
+      "code": {
+        "title": "PyTorch 2.13 smoke test",
+        "language": "python",
+        "source": "import torch\n\naccelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nx = torch.arange(6, dtype=torch.float32).reshape(2, 3).to(device)\nprint(\"PyTorch:\", torch.__version__)\nprint(\"device :\", device)\nprint(\"result :\", (x.square().mean()).item())"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not hard-code CUDA",
+          "body": "A CUDA-only branch ignores Apple, Intel, and future accelerator backends. Device-neutral examples also remain runnable on CPU-only machines."
+        }
+      ]
+    },
+    {
+      "id": "notebook-discipline",
+      "title": "Treat a notebook as a stateful program",
+      "summary": "Cells are convenient experiments, but their hidden execution order can produce results that a clean run cannot reproduce.",
+      "body": [
+        "A notebook kernel remembers variables created by every executed cell. Running cell 12 before cell 8 may work only because an older version of a variable is still in memory. Execution counters help, but the decisive check is to restart the kernel and run the notebook from top to bottom.",
+        "Keep setup, imports, configuration, data preparation, model definition, training, and evaluation in a readable order. When an experiment matters, record the seed, library versions, device, and important hyperparameters beside its result."
+      ],
+      "points": [
+        "Restart and run all before trusting a notebook result.",
+        "Keep one purpose per cell and avoid redefining the same name far apart.",
+        "Move repeated logic into functions so inputs and outputs become explicit.",
+        "Save learned state separately from transient notebook state."
+      ],
+      "code": {
+        "title": "A compact experiment header",
+        "language": "python",
+        "source": "from dataclasses import dataclass\nimport torch\n\n@dataclass(frozen=True)\nclass Config:\n    seed: int = 7\n    batch_size: int = 32\n    learning_rate: float = 1e-3\n\ncfg = Config()\ntorch.manual_seed(cfg.seed)\nprint({\"torch\": torch.__version__, **vars(cfg)})"
+      }
+    },
+    {
+      "id": "reading-code",
+      "title": "Read PyTorch code through four contracts",
+      "summary": "Most confusing errors become ordinary once you track shape, dtype, device, and gradient intent.",
+      "body": [
+        "For every important tensor, ask four questions: what does each axis mean, which numeric type does it use, where is it stored, and should autograd track operations on it? These contracts connect code syntax to the underlying experiment.",
+        "Shape errors often surface at matrix multiplication or loss computation. Device errors appear when a module and its inputs live on different backends. Dtype errors are common when integer labels and floating-point features are mixed incorrectly. Gradient errors usually come from detaching a tensor or disabling tracking at the wrong time."
+      ],
+      "code": {
+        "title": "Print the tensor contract",
+        "language": "python",
+        "source": "def describe(name: str, tensor: torch.Tensor) -> None:\n    print(\n        name,\n        {\n            \"shape\": tuple(tensor.shape),\n            \"dtype\": str(tensor.dtype),\n            \"device\": str(tensor.device),\n            \"requires_grad\": tensor.requires_grad,\n        },\n    )\n\ndescribe(\"x\", x)"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Version baseline",
+      "book": "The book notebooks preserve APIs and environment assumptions from their publication period.",
+      "current": "Target PyTorch 2.13 and Python 3.10+",
+      "reason": "Always use the official install selector for the exact operating system and accelerator combination instead of pasting an old wheel command."
+    },
+    {
+      "topic": "Accelerators",
+      "book": "Many examples choose between CUDA and CPU directly.",
+      "current": "Use the backend-neutral torch.accelerator API",
+      "reason": "The current abstraction can represent CUDA, MPS, XPU, and additional accelerator backends without teaching one vendor as the universal device model."
+    },
+    {
+      "topic": "Execution",
+      "book": "Eager notebook execution is the normal learning and debugging path.",
+      "current": "Keep eager as baseline; add torch.compile selectively",
+      "reason": "Compilation can improve performance, but it adds tracing, guards, and graph-break behavior. Correct eager results and representative benchmarks come first."
+    }
+  ],
+  "notebookLinks": [],
+  "exercises": [
+    {
+      "title": "Describe a tensor",
+      "prompt": "Create a 2 × 3 floating-point tensor. Print its shape, dtype, device, minimum, maximum, and mean, then explain what each value says about the data contract.",
+      "success": "the reported metadata matches the tensor and the explanation distinguishes metadata from data values"
+    },
+    {
+      "title": "Choose an accelerator safely",
+      "prompt": "Write get_device() with torch.accelerator, move a tensor to the returned device, perform an operation, and move the result to CPU before converting it to NumPy.",
+      "success": "the same function runs without editing on a CPU-only environment and on an available supported accelerator"
+    },
+    {
+      "title": "Annotate the learning loop",
+      "prompt": "Run the five-part workflow from the first section. Add comments identifying data, model, forward pass, loss, backward pass, and update, then repeat the step ten times and record the loss trend.",
+      "success": "each stage is labeled correctly and the final loss is lower than the initial loss"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "PyTorch 2.13 documentation",
+      "url": "https://docs.pytorch.org/docs/stable/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Learn the Basics",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/intro.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.accelerator",
+      "url": "https://docs.pytorch.org/docs/stable/accelerator.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Install PyTorch",
+      "url": "https://pytorch.org/get-started/locally/"
+    }
+  ]
+}

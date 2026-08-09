@@ -12,6 +12,28 @@ Target repository: `buicongnguyen/pytorch-deep-learning`
 
 Target URL: `https://buicongnguyen.github.io/pytorch-deep-learning/`
 
+## 2026 course expansion
+
+The second phase turns the notebook catalog into an original, code-first online
+course. `learnpytorch.io` is credited as a pedagogical reference for its
+long-form lesson rhythm, local table of contents, runnable examples, exercises,
+and further reading. Its prose and visual implementation are not copied.
+
+Each Atlas chapter now follows the same reviewed contract:
+
+1. measurable learning outcomes;
+2. four or more original concept-and-code lesson sections;
+3. a book-to-current review targeting stable PyTorch 2.13;
+4. deliberate mappings to the pinned second-edition notebooks;
+5. at least three exercises with completion criteria; and
+6. a visible reference section crediting LearnPyTorch and linking official
+   PyTorch primary sources.
+
+Content ships sequentially. A chapter is added to `content/course.json` only
+after its lesson passes schema, route, link, and production-build checks. That
+chapter is then committed, pushed to `main` over SSH, deployed with GitHub
+Pages, and verified before editorial work moves to the next chapter.
+
 ## Reviewed scope
 
 - Seventeen chapter routes, including context pages for chapters without a
@@ -30,12 +52,15 @@ Target URL: `https://buicongnguyen.github.io/pytorch-deep-learning/`
    never stores notebook outputs or Manning prose.
 2. `content/catalog.json` is the reviewable source-of-truth for chapter and cell
    coverage.
-3. `scripts/build.mjs` generates a dependency-free static site into `dist/`.
-4. Notebook pages fetch code directly from the pinned upstream GitHub commit at
+3. `content/lessons/chapter-NN.json` stores original course lessons and
+   `content/course.json` records the chapters that passed editorial review.
+4. `scripts/build.mjs` generates a dependency-free static site into `dist/`.
+5. Notebook pages fetch code directly from the pinned upstream GitHub commit at
    viewing time and pair it with the locally authored explanations.
-5. `scripts/check.mjs` fails unless all chapters, notebooks, cells, routes, and
+6. `scripts/check.mjs` fails unless reviewed lessons satisfy the content
+   contract and all chapters, notebooks, cells, routes, and
    required Pages artifacts are present.
-6. `.github/workflows/pages.yml` rebuilds and deploys the verified artifact.
+7. `.github/workflows/pages.yml` rebuilds and deploys the verified artifact.
 
 ## Review findings and decisions
 
@@ -71,6 +96,9 @@ repository and enable Pages.
 - The generated audit reports 17 chapters, 63 notebooks, and 810 code cells.
 - Root, chapter, notebook, 404, sitemap, robots, and `.nojekyll` files exist.
 - Every notebook points to the pinned upstream commit.
+- Every reviewed lesson has learning outcomes, substantive sections, current
+  API notes, exercises, a LearnPyTorch credit, and official PyTorch references.
+- `content/course.json` and the lesson file set match exactly.
 - No generated page contains notebook output payloads.
 - The repository is committed, pushed through an SSH `origin`, and the Pages
   deployment reports success.

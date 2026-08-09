@@ -48,6 +48,28 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.body.classList.contains("nav-open")) { document.body.classList.remove("nav-open"); navToggle?.setAttribute("aria-expanded", "false"); }
 });
 
+document.querySelectorAll(".lesson-copy").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const source = button.closest(".lesson-code")?.querySelector("code")?.textContent || "";
+    await navigator.clipboard.writeText(source);
+    button.textContent = "Copied";
+    setTimeout(() => { button.textContent = "Copy code"; }, 1400);
+  });
+});
+
+const lessonToc = document.querySelector(".lesson-toc");
+if (lessonToc) {
+  const sections = [...document.querySelectorAll(".course-article > section[id]")];
+  const links = [...lessonToc.querySelectorAll("a")];
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      links.forEach((link) => link.classList.toggle("active", link.hash === `#${entry.target.id}`));
+    }
+  }, { rootMargin: "-18% 0px -72%" });
+  sections.forEach((section) => observer.observe(section));
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
