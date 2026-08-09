@@ -73,7 +73,7 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
   ${noindex ? "" : `<link rel="alternate" hreflang="en" href="${absoluteUrl("en", logicalPath)}">
   <link rel="alternate" hreflang="vi" href="${absoluteUrl("vi", logicalPath)}">
   <link rel="alternate" hreflang="x-default" href="${absoluteUrl("en", logicalPath)}">`}
-  <link rel="stylesheet" href="${siteBase}assets/styles.css?v=4">
+  <link rel="stylesheet" href="${siteBase}assets/styles.css?v=5">
   <title>${escapeHtml(fullTitle)}</title>
 </head>
 <body class="${pageClass}">
@@ -102,7 +102,7 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
     <div class="search-results" aria-live="polite"></div>
   </dialog>
   <script id="runtime-i18n" type="application/json">${safeJson(ui)}</script>
-  <script type="module" src="${siteBase}assets/app.js?v=4"></script>
+  <script type="module" src="${siteBase}assets/app.js?v=5"></script>
 </body>
 </html>`;
 }
@@ -250,8 +250,8 @@ function chapterPage(locale, chapter) {
   const logicalPath = chapterPath(chapter.number);
   const body = `
     <nav class="breadcrumbs" aria-label="${escapeHtml(ui.breadcrumbLabel)}"><a href="${route(locale.code)}">${escapeHtml(ui.atlas)}</a><span>/</span><b>${escapeHtml(formatMessage(ui.chapter, { number: chapter.number }))}</b></nav>
-    <header class="chapter-hero"><span class="chapter-kicker">${escapeHtml(formatMessage(ui.chapter, { number: chapterLabel(chapter.number) }))} · ${escapeHtml(formatMessage(ui.reviewedFor, { version: course.pytorchVersion }))}</span><h1>${escapeHtml(chapter.title)}</h1><p>${escapeHtml(chapter.summary)}</p>
-      <ul>${stat(chapter.notebookCount, ui.notebooks)}${stat(chapter.codeCellCount, ui.explainedCells)}${stat(formatMessage(ui.lessonMinutes, { count: lesson.minutes }), ui.lesson)}</ul>
+    <header class="chapter-hero"><div class="chapter-hero-copy"><span class="chapter-kicker">${escapeHtml(formatMessage(ui.chapter, { number: chapterLabel(chapter.number) }))} · ${escapeHtml(formatMessage(ui.reviewedFor, { version: course.pytorchVersion }))}</span><h1>${escapeHtml(chapter.title)}</h1><p>${escapeHtml(chapter.summary)}</p></div>
+      <ul class="chapter-facts">${stat(chapter.notebookCount, ui.notebooks)}${stat(chapter.codeCellCount, ui.explainedCells)}${stat(formatMessage(ui.lessonMinutes, { count: lesson.minutes }), ui.lesson)}</ul>
     </header>
     ${courseLesson(locale, chapter, lesson)}
     <section class="chapter-content"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.completeNotebookShelf)}</p><h2>${escapeHtml(ui.allGuidedCode)}</h2><p>${escapeHtml(ui.notebookShelfDescription)}</p></div><div class="notebook-list">${notebookList}</div></section>

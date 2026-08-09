@@ -95,6 +95,7 @@ document.querySelector(".language-switch")?.addEventListener("click", (event) =>
 
 const lessonToc = document.querySelector(".lesson-toc");
 if (lessonToc) {
+  if (matchMedia("(max-width: 700px)").matches) lessonToc.open = false;
   const sections = [...document.querySelectorAll(".course-article > section[id]")];
   const links = [...lessonToc.querySelectorAll("a")];
   const observer = new IntersectionObserver((entries) => {
