@@ -1,0 +1,16 @@
+{
+  "name": "pytorch-deep-learning-atlas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An interactive, chapter-by-chapter companion to Deep Learning with PyTorch, Second Edition.",
+  "type": "module",
+  "scripts": {
+    "import": "node scripts/import-catalog.mjs",
+    "build": "node scripts/build.mjs && node scripts/check.mjs",
+    "check": "node scripts/check.mjs",
+    "start": "npm run build && node scripts/serve.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
