@@ -1,0 +1,148 @@
+{
+  "chapter": 11,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 75,
+  "outcomes": [
+    "Describe the CT nodule project as a sequence of data, candidate, classification, and segmentation decisions.",
+    "Define patient- or series-level train, validation, and test boundaries before creating derived samples.",
+    "Write a reproducibility manifest covering data identity, software, hardware, seeds, splits, and checkpoints.",
+    "State the intended educational use, evaluation unit, limitations, and non-clinical status of the resulting model."
+  ],
+  "sections": [
+    {
+      "id": "question-and-unit",
+      "title": "Define one prediction question and one evaluation unit",
+      "summary": "A clear project contract prevents candidate crops, CT series, and patients from being treated as interchangeable examples.",
+      "body": [
+        "The project begins with CT volumes and candidate locations, then asks a classifier or segmenter to characterize local regions. Write the input, output, target definition, and unit of evaluation before implementing a Dataset. A crop-level probability and a patient-level clinical conclusion are not the same claim.",
+        "Keep a de-identified series_uid or the available patient identifier attached to every derived crop and mask. Metrics can be computed over crops for debugging, but the split boundary and final report must reflect the independent unit defined by the project contract. Do not place direct patient identifiers or identifying DICOM fields in logs, figures, or a public repository."
+      ],
+      "points": [
+        "Input: a CT series or a candidate-centered tensor derived from it.",
+        "Output: a logit, probability, or mask with an explicitly documented interpretation.",
+        "Target: an annotation-derived label, including how uncertain or missing labels are handled.",
+        "Evaluation unit: candidate, series, or patient, stated before metric selection."
+      ],
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Educational, not clinical",
+          "body": "This course reproduces a learning project. It does not establish clinical validity, safety, calibration, regulatory fitness, or suitability for diagnosis."
+        }
+      ]
+    },
+    {
+      "id": "pipeline-map",
+      "title": "Map the full pipeline before writing model code",
+      "summary": "A pipeline diagram makes hidden transformations and provenance loss visible.",
+      "body": [
+        "Trace raw archive acquisition, series discovery, metadata parsing, world-to-voxel conversion, candidate crops, normalization, augmentation, batching, prediction, and aggregation. At each arrow record the identifier and coordinate metadata that must survive.",
+        "The following chapters implement the map in layers: Chapter 12 establishes trustworthy samples, Chapters 13 and 14 train and improve classification, and Chapter 15 adds segmentation and foundation models. A failure in an upstream coordinate or split step cannot be repaired by a larger downstream model."
+      ],
+      "points": [
+        "Preserve raw source files as immutable inputs.",
+        "Version derived metadata and record its generating code revision.",
+        "Make normalization and crop geometry part of the model input contract.",
+        "Store enough provenance to trace any prediction back to a series and location."
+      ]
+    },
+    {
+      "id": "split-before-crops",
+      "title": "Split identities before generating crops",
+      "summary": "Randomly splitting derived candidates can place information from one scan on both sides of evaluation.",
+      "body": [
+        "Create train, validation, and test partitions at the patient level whenever a patient-to-series mapping is available. Fall back to series_uid only when the source cannot link multiple series from one patient, and disclose that limitation. Only after the identity split is frozen should each partition produce candidate crops, augmentations, or pseudo-labels. This ordering prevents nearby candidates or repeated views of the same anatomy from crossing boundaries.",
+        "Treat the split manifest as data: save it, checksum it, review label prevalence by partition, and assert disjointness every time the program starts. Do not improve an inconvenient test distribution by silently resampling it."
+      ],
+      "code": {
+        "title": "Fail fast on split leakage",
+        "language": "python",
+        "source": "def require_disjoint_splits(split_to_ids):\n    names = list(split_to_ids)\n    for i, left in enumerate(names):\n        for right in names[i + 1:]:\n            overlap = set(split_to_ids[left]) & set(split_to_ids[right])\n            if overlap:\n                examples = sorted(overlap)[:3]\n                raise ValueError(\n                    f\"{left}/{right} identity leak: {examples}\"\n                )\n\nexample_splits = {\n    \"train\": {\"series-001\", \"series-002\"},\n    \"validation\": {\"series-101\"},\n    \"test\": {\"series-201\"},\n}\nrequire_disjoint_splits(example_splits)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Augmentation does not create independence",
+          "body": "Two augmented crops from one series remain related observations. Keep all descendants of a source identity in the same partition."
+        }
+      ]
+    },
+    {
+      "id": "reproducibility-contract",
+      "title": "Record enough context to reproduce a result",
+      "summary": "A seed alone cannot identify data, code, environment, or hardware differences.",
+      "body": [
+        "Record the PyTorch and dependency versions, code commit, source-data checksums, split checksum, hyperparameters, random seeds, accelerator, and deterministic settings. PyTorch notes that exact reproducibility is not guaranteed across releases or platforms, so the manifest defines the environment within which comparison is meaningful.",
+        "Save model and optimizer state_dicts plus the epoch, scheduler, scaler, and best-metric decision when training must resume. Keep human-readable, JSON-compatible configuration beside the binary checkpoint. Load only artifacts with verified provenance; weights_only=True narrows accepted object types but does not make an unknown file trustworthy."
+      ],
+      "code": {
+        "title": "A minimal run manifest",
+        "language": "python",
+        "source": "import json\nimport platform\nimport torch\n\ndef make_run_manifest(\n    *, seed, split_sha256, source_revision, device, config,\n):\n    manifest = {\n        \"torch\": torch.__version__,\n        \"python\": platform.python_version(),\n        \"seed\": int(seed),\n        \"split_sha256\": str(split_sha256),\n        \"source_revision\": str(source_revision),\n        \"device\": str(device),\n        \"config\": dict(config),\n    }\n    json.dumps(manifest)  # fail now if config is not JSON-compatible\n    return manifest\n\nmanifest = make_run_manifest(\n    seed=17,\n    split_sha256=\"example-split-sha256\",\n    source_revision=\"luna16-zenodo-2595812\",\n    device=torch.device(\"cpu\"),\n    config={\"batch_size\": 8, \"learning_rate\": 1e-3},\n)\nprint(json.dumps(manifest, indent=2, sort_keys=True))"
+      }
+    },
+    {
+      "id": "review-gates",
+      "title": "Choose review gates before results create pressure",
+      "summary": "Predefined checks separate engineering progress from retrospective metric storytelling.",
+      "body": [
+        "Require visual sample review and coordinate tests before training, a small-batch overfit before a full run, and validation-only model selection before one final test evaluation. Define the primary metric and important slices, including performance by candidate size or acquisition condition when metadata permits.",
+        "Document known exclusions, annotation uncertainty, class prevalence, preprocessing assumptions, and failure examples. A strong educational report shows where the model is wrong and what evidence would be required before expanding its intended use."
+      ],
+      "points": [
+        "Data gate: identities, coordinates, shapes, ranges, and representative images checked.",
+        "Training gate: a tiny fixed subset can be overfit and a checkpoint can resume.",
+        "Evaluation gate: threshold and model choice use validation data only.",
+        "Reporting gate: failures and limitations appear beside aggregate metrics."
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Project reproducibility",
+      "book": "The project sequence emphasizes a complete working pipeline across several chapters.",
+      "current": "Pin PyTorch 2.13, data identity, split manifest, code revision, and hardware together",
+      "reason": "PyTorch explicitly does not guarantee identical results across releases and platforms; a meaningful comparison requires a bounded environment, not only torch.manual_seed."
+    },
+    {
+      "topic": "Checkpoint safety",
+      "book": "Training chapters save model progress for later use.",
+      "current": "Prefer plain state_dict checkpoints and weights_only=True for trusted loads",
+      "reason": "State dictionaries are modular and reduce dependence on pickled class definitions. Keep configuration JSON-compatible and never deserialize artifacts from an untrusted source."
+    },
+    {
+      "topic": "Evaluation scope",
+      "book": "Candidate classification supplies an accessible end-to-end medical-imaging problem.",
+      "current": "Make identity-level splits and non-clinical limitations explicit",
+      "reason": "Derived crops from one scan are correlated, and educational benchmark performance does not establish safety for clinical decisions."
+    }
+  ],
+  "notebookLinks": [],
+  "exercises": [
+    {
+      "title": "Draw the provenance graph",
+      "prompt": "Create a diagram from raw CT series to final prediction. Label every stored identifier, coordinate transform, derived artifact, and split boundary, then list three places where provenance could be lost.",
+      "success": "every prediction can be traced to a source identity and the leakage boundary occurs before any crop or augmentation"
+    },
+    {
+      "title": "Design a split manifest",
+      "prompt": "Specify a JSON or CSV schema for immutable train, validation, and test identities. Write disjointness, duplicate, and label-prevalence checks without looking at test model performance.",
+      "success": "the checks reject overlapping identities and the saved manifest has a stable checksum"
+    },
+    {
+      "title": "Write the model card before training",
+      "prompt": "Draft purpose, users, exclusions, data provenance, input/output contract, primary metric, expected failure modes, and the evidence missing for clinical use.",
+      "success": "the document makes no clinical claim and defines a falsifiable evaluation plan for the educational experiment"
+    }
+  ],
+  "references": [
+    {"type": "Teaching reference", "title": "Learn PyTorch for Deep Learning", "url": "https://www.learnpytorch.io/"},
+    {"type": "Official PyTorch", "title": "Datasets and DataLoaders", "url": "https://docs.pytorch.org/tutorials/beginner/basics/data_tutorial.html"},
+    {"type": "Official PyTorch", "title": "Reproducibility", "url": "https://docs.pytorch.org/docs/2.13/notes/randomness.html"},
+    {"type": "Official PyTorch", "title": "torch.load", "url": "https://docs.pytorch.org/docs/2.13/generated/torch.load.html"},
+    {"type": "Official PyTorch", "title": "Saving and loading models", "url": "https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html"},
+    {"type": "Primary dataset", "title": "LUNA16 challenge description", "url": "https://luna16.grand-challenge.org/Home/"},
+    {"type": "Primary dataset", "title": "LUNA16 evaluation and coordinate contract", "url": "https://luna16.grand-challenge.org/Evaluation/"}
+  ]
+}
