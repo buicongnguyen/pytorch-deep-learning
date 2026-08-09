@@ -1,0 +1,227 @@
+{
+  "chapter": 2,
+  "minutes": 120,
+  "outcomes": [
+    "Load a pretrained TorchVision model with the weight object that defines its preprocessing and output categories.",
+    "Run inference with the model, inputs, and accelerator on compatible devices while keeping evaluation mode separate from gradient mode.",
+    "Explain the difference between an architecture, a state dictionary, and a task-level pipeline.",
+    "Inspect external model code and checkpoints with explicit dependency, license, and trust boundaries."
+  ],
+  "sections": [
+    {
+      "id": "pretrained-contract",
+      "title": "Treat pretrained inference as a contract",
+      "summary": "Weights, preprocessing, tensor layout, evaluation mode, and label metadata must agree.",
+      "body": [
+        "A pretrained model is useful because its parameters already encode patterns learned from a large dataset. Those parameters are meaningful only when the new input is prepared the same way as the training inputs. Resizing, cropping, scaling, channel order, and normalization are therefore part of the model contract rather than decorative cleanup.",
+        "TorchVision weight enums keep that contract close to the weights. The weight object supplies the matching transforms and category metadata, so the code does not need a copied list of labels or hand-entered normalization constants."
+      ],
+      "points": [
+        "The architecture defines computation; the weights hold learned state.",
+        "The weight transform converts an image into the expected C × H × W tensor.",
+        "A batch dimension changes C × H × W into N × C × H × W.",
+        "Class scores are logits until a reporting step converts them to probabilities."
+      ],
+      "code": {
+        "title": "One-image classification with weight metadata",
+        "language": "python",
+        "source": "import torch\nfrom torchvision.io import decode_image\nfrom torchvision.models import ResNet50_Weights, resnet50\n\nweights = ResNet50_Weights.DEFAULT\nmodel = resnet50(weights=weights).eval()\nimage = decode_image(\"image.jpg\")\nbatch = weights.transforms()(image).unsqueeze(0)\n\nwith torch.inference_mode():\n    logits = model(batch)\n    probability = logits.softmax(dim=1)\n\nclass_id = probability.argmax(dim=1).item()\nprint(weights.meta[\"categories\"][class_id], probability[0, class_id].item())"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Do not invent the preprocessing",
+          "body": "A model can execute successfully with the wrong resize or normalization and still produce misleading predictions. Use the transform attached to the selected weight."
+        }
+      ]
+    },
+    {
+      "id": "evaluation-device",
+      "title": "Separate evaluation behavior from gradient tracking",
+      "summary": "model.eval() and torch.inference_mode() are complementary, not interchangeable.",
+      "body": [
+        "Calling eval() changes modules whose behavior depends on training state, notably dropout and batch normalization. It does not disable autograd. Inference mode prevents a backward graph from being recorded and removes additional tracking overhead when outputs will never participate in training.",
+        "The module and its input tensors must also live on the same device. PyTorch 2.13 provides a backend-neutral accelerator query, allowing the same example to use CUDA, MPS, XPU, another supported accelerator, or CPU."
+      ],
+      "code": {
+        "title": "Device-neutral inference",
+        "language": "python",
+        "source": "accelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nmodel = model.to(device)\nbatch = batch.to(device)\nmodel.eval()\nwith torch.inference_mode():\n    logits = model(batch)\n\nprint(logits.shape, logits.device)"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "Probabilities are for interpretation",
+          "body": "Keep logits for losses such as CrossEntropyLoss. Apply softmax only when a probability distribution is needed for reporting."
+        }
+      ]
+    },
+    {
+      "id": "model-families",
+      "title": "Compare models by more than their name",
+      "summary": "Accuracy, parameters, operations, input recipe, latency, and license all affect whether a model fits a task.",
+      "body": [
+        "TorchVision can list registered models and retrieve their weight definitions. That makes model discovery reproducible, but the largest or most accurate entry is not automatically the best choice. A deployment target may value memory or latency more than a small accuracy difference.",
+        "Run candidate models on representative inputs and hardware. Record the exact weight identifier rather than relying on DEFAULT forever, because that alias may point to a newer weight recipe in a future TorchVision release."
+      ],
+      "points": [
+        "Pin an explicit weight identifier when exact reproducibility matters.",
+        "Read the weight metadata before comparing reported metrics.",
+        "Benchmark after warm-up and synchronize asynchronous accelerators before timing.",
+        "Review the model and training-data terms for the intended use."
+      ],
+      "code": {
+        "title": "Discover registered classification models",
+        "language": "python",
+        "source": "from torchvision.models import get_model, get_model_weights, list_models\n\nnames = list_models(include=\"mobilenet_v3*\")\nprint(names)\nweight_type = get_model_weights(\"mobilenet_v3_small\")\nselected = weight_type.DEFAULT\nsmall_model = get_model(\"mobilenet_v3_small\", weights=selected).eval()"
+      }
+    },
+    {
+      "id": "generative-case-studies",
+      "title": "Read generative demos as systems",
+      "summary": "CycleGAN and inpainting add architecture, preprocessing, checkpoint, and dependency decisions around the PyTorch core.",
+      "body": [
+        "The CycleGAN notebook exposes the model definition and then loads learned state. Trace the image from decoder to normalized tensor, through the generator, and back to display range. Replace the historical .data access with detach() before visualization so the code does not bypass autograd safety.",
+        "The inpainting notebook is a task pipeline assembled from ecosystem packages. Keep it as an optional case study with a separate environment declaration. Explain which objects are PyTorch modules and tensors, which package downloads weights, and which inputs form the image, mask, and text condition."
+      ],
+      "points": [
+        "A task pipeline can contain several pretrained components.",
+        "Third-party APIs and model licenses must be reviewed separately from PyTorch.",
+        "Downloading code or weights is a trust decision, not just a convenience call.",
+        "Display conversion should use detached tensors rather than .data."
+      ],
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Optional dependency boundary",
+          "body": "Do not make the core chapter depend on the generative notebooks. Their external packages and large checkpoints should be isolated from the TorchVision classification path."
+        }
+      ]
+    },
+    {
+      "id": "checkpoint-safety",
+      "title": "Load learned state deliberately",
+      "summary": "A state dictionary is the flexible checkpoint boundary, and untrusted pickle data remains dangerous.",
+      "body": [
+        "The recommended routine is to construct the known model class, deserialize a state dictionary, and pass it to load_state_dict(). In current PyTorch, weights_only=True restricts the unpickler to tensor-oriented state and primitive containers. map_location=\"cpu\" also prevents an unnecessary accelerator allocation during loading.",
+        "The restriction reduces the code-execution surface but does not make arbitrary files harmless. Obtain checkpoints from a trusted source, verify their provenance, and inspect missing or unexpected keys instead of silently accepting an incompatible architecture."
+      ],
+      "code": {
+        "title": "Load a trusted state dictionary",
+        "language": "python",
+        "source": "state = torch.load(\n    \"model_state.pt\",\n    map_location=\"cpu\",\n    weights_only=True,\n)\nresult = model.load_state_dict(state, strict=True)\nprint(result)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Never load an unknown checkpoint casually",
+          "body": "torch.load uses deserialization machinery. weights_only=True narrows what may be constructed, but provenance and trust are still required."
+        }
+      ]
+    },
+    {
+      "id": "mnist-bridge",
+      "title": "Bridge from inference to learning",
+      "summary": "The MNIST notebook reveals the same model contract while adding loss, gradients, and optimizer updates.",
+      "body": [
+        "A pretrained classifier hides the training history but still exposes inputs, outputs, and learned parameters. The MNIST notebook makes the learning loop visible with a small convolutional network and data loader.",
+        "Modernize the loop without changing its teaching purpose: return raw logits, pass them to CrossEntropyLoss, clear gradients before backward, and evaluate under eval() plus inference_mode(). Save only the state dictionary for the next run."
+      ],
+      "code": {
+        "title": "A current classification step",
+        "language": "python",
+        "source": "model.train()\nimages, targets = next(iter(train_loader))\nimages, targets = images.to(device), targets.to(device)\n\noptimizer.zero_grad(set_to_none=True)\nlogits = model(images)\nloss = torch.nn.functional.cross_entropy(logits, targets)\nloss.backward()\noptimizer.step()"
+      }
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Pretrained weights",
+      "book": "Earlier examples often paired a model constructor with manually copied transforms and labels.",
+      "current": "Use TorchVision weight enums, weight transforms, and weight metadata",
+      "reason": "The weight object keeps preprocessing and categories aligned with the exact learned parameters and avoids the deprecated pretrained=True interface."
+    },
+    {
+      "topic": "Inference",
+      "book": "Examples may call eval() or inspect outputs through .data.",
+      "current": "Combine eval() with inference_mode() and use detach() for display",
+      "reason": "Evaluation state and gradient recording are different controls, while .data bypasses safeguards that make autograd mutations understandable."
+    },
+    {
+      "topic": "Checkpoint loading",
+      "book": "Several notebooks deserialize checkpoints with an unrestricted torch.load call.",
+      "current": "Load trusted state dictionaries with weights_only=True and an explicit map_location",
+      "reason": "The current default favors tensor-oriented loading, portable device placement, and a smaller deserialization attack surface."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch2--1_making_sure_things_work",
+      "reason": "Use this first to verify imports, basic tensor work, and accelerator visibility."
+    },
+    {
+      "slug": "p1ch2--2_pre_trained_networks",
+      "reason": "Modernize the image-classification path around a TorchVision weight enum and its attached transform."
+    },
+    {
+      "slug": "p1ch2--3_cyclegan",
+      "reason": "Trace a complete image-to-image generator while replacing historical .data display access with detach()."
+    },
+    {
+      "slug": "p1ch2--3_inpainting",
+      "reason": "Study a multi-component ecosystem pipeline as an optional dependency and provenance case."
+    },
+    {
+      "slug": "p1ch2--4_model_zoos",
+      "reason": "Compare model discovery mechanisms and record the exact model and weight identifiers."
+    },
+    {
+      "slug": "p1ch2--5_mnist",
+      "reason": "Connect pretrained inference to a visible training loop and safe state-dictionary loading."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Build a weight-aware predictor",
+      "prompt": "Write predict_image(model_builder, weight, path) that decodes an image, applies weight.transforms(), runs eval() plus inference_mode(), and returns the top three labels from weight.meta.",
+      "success": "the function contains no copied class list or normalization constants and returns three labeled probabilities"
+    },
+    {
+      "title": "Break the preprocessing contract",
+      "prompt": "Run one image through the correct weight transform and through a deliberately incorrect resize-and-scale path. Compare the top-five outputs and explain why successful execution is not evidence of valid preprocessing.",
+      "success": "both outputs are recorded and the explanation identifies at least two violated input assumptions"
+    },
+    {
+      "title": "Audit a checkpoint path",
+      "prompt": "Modernize one upstream torch.load call with provenance notes, weights_only=True, map_location=\"cpu\", strict state loading, and a visible report of incompatible keys.",
+      "success": "the trusted checkpoint loads into the intended architecture without an unrestricted whole-model deserialization"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "TorchVision models and pretrained weights",
+      "url": "https://docs.pytorch.org/vision/stable/models.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Inference mode",
+      "url": "https://docs.pytorch.org/docs/stable/generated/torch.autograd.grad_mode.inference_mode.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Saving and loading models",
+      "url": "https://docs.pytorch.org/tutorials/beginner/saving_loading_models.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.accelerator",
+      "url": "https://docs.pytorch.org/docs/stable/accelerator.html"
+    }
+  ]
+}
