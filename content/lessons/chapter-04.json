@@ -1,0 +1,236 @@
+{
+  "chapter": 4,
+  "pytorchVersion": "2.13",
+  "reviewedAt": "2026-08-09",
+  "minutes": 165,
+  "outcomes": [
+    "Describe a real-world sample with an explicit tensor layout, dtype, value range, units, and target.",
+    "Separate decoding from tensor transformation so that each stage can be tested independently.",
+    "Prepare image, volume, tabular, time-series, text, audio, and video data without losing semantic information.",
+    "Recognize leakage, shared-memory mutation, invalid scaling, and variable-length batching before they reach a model."
+  ],
+  "sections": [
+    {
+      "id": "representation-pipeline",
+      "title": "Turn every modality into an explicit pipeline",
+      "summary": "Decode, arrange, cast, scale, normalize, and batch are separate decisions.",
+      "body": [
+        "A model never receives a photograph, wine record, sentence, or sound as humans understand it. It receives numbers with an axis order and numeric representation. Good preprocessing preserves the useful structure while making every assumption visible.",
+        "Keep file decoding separate from tensor preparation. A decoder answers how bytes become an array. A preprocessor answers how that array becomes a model input. The separation makes it possible to test layout, range, and normalization using small synthetic tensors without repeatedly reading files."
+      ],
+      "points": [
+        "Document layout, dtype, range, units, missing values, and target for each sample.",
+        "Compute fitted statistics on the training split only.",
+        "Assert the contract after preprocessing and after collation.",
+        "Keep reversible metadata such as vocabulary or category mappings beside the pipeline."
+      ],
+      "code": {
+        "title": "A reusable tensor report",
+        "language": "python",
+        "source": "import torch\n\ndef report(name: str, value: torch.Tensor, axes: str) -> None:\n    assert len(axes.split()) == value.ndim\n    print({\n        \"name\": name,\n        \"axes\": axes,\n        \"shape\": tuple(value.shape),\n        \"dtype\": str(value.dtype),\n        \"min\": value.min().item(),\n        \"max\": value.max().item(),\n    })\n\nreport(\"image\", torch.rand(3, 32, 32), \"channel height width\")"
+      }
+    },
+    {
+      "id": "images-volumes",
+      "title": "Preserve spatial axes in images and volumes",
+      "summary": "Images commonly use C × H × W; medical volumes add a depth axis whose physical spacing matters.",
+      "body": [
+        "An image decoder may return height × width × channel data, while PyTorch vision models usually consume channel × height × width samples and N × C × H × W batches. TorchVision I/O decodes a file into a tensor; transforms v2 then converts, scales, normalizes, or jointly transforms image-like inputs through explicit operations.",
+        "A CT volume adds depth, but voxel indices do not fully describe physical geometry. Slice spacing, orientation, and intensity calibration belong to the sample metadata. Preserve them even when the first exercise uses only a tensor crop."
+      ],
+      "code": {
+        "title": "Current image conversion with transforms v2",
+        "language": "python",
+        "source": "from pathlib import Path\n\nimport torch\nfrom torchvision.io import decode_image\nfrom torchvision.transforms import v2\n\nprepare = v2.Compose([\n    v2.ToImage(),\n    v2.ToDtype(torch.float32, scale=True),\n    v2.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),\n])\n\n# Run from the root of the pinned dlwpt-code-2e repository.\nimage_path = Path(\"data/p1ch4/image-dog/bobby.jpg\")\nimage = prepare(decode_image(image_path, mode=\"RGB\"))\nassert image.ndim == 3 and image.shape[0] == 3"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Axis order can look plausible",
+          "body": "H × W × C and C × H × W contain the same number of elements. A reshape is not a valid axis permutation; use permute or movedim."
+        }
+      ]
+    },
+    {
+      "id": "tabular-data",
+      "title": "Make tabular semantics survive tensor conversion",
+      "summary": "Continuous, ordinal, categorical, missing, and target columns require different handling.",
+      "body": [
+        "A rectangular file does not imply that every column should become the same kind of floating-point feature. Separate the target first, record column names, inspect missing values, and decide which categorical values need an encoding rather than an invented numeric distance.",
+        "Normalize continuous features using statistics computed only from the training rows. Store those statistics and apply them unchanged to validation and test rows. Labels for class-index classification losses should normally use torch.long rather than floating point."
+      ],
+      "code": {
+        "title": "Fit and apply training statistics",
+        "language": "python",
+        "source": "import torch\n\nfeatures = torch.tensor(\n    [[7.4, 0.70], [7.8, 0.88], [7.8, 0.76]],\n    dtype=torch.float32,\n)\nmean = features.mean(dim=0)\nstd = features.std(dim=0).clamp_min(1e-8)\nnormalized = (features - mean) / std\n\nassert torch.isfinite(normalized).all()"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Avoid preprocessing leakage",
+          "body": "Statistics computed from validation or test rows allow information from evaluation data to influence the training representation."
+        }
+      ]
+    },
+    {
+      "id": "time-series",
+      "title": "Window time without confusing it with the batch axis",
+      "summary": "A sequence representation must state where time, features, and independent samples live.",
+      "body": [
+        "The bicycle notebook reshapes hourly rows into daily blocks and transposes axes. That is a semantic operation: each new sample contains a time window rather than an arbitrary chunk of contiguous memory. Verify that the row count is divisible by the window size or handle the incomplete window explicitly.",
+        "Split chronologically before fitting normalization when the goal is future prediction. Randomly mixing future observations into training can produce an optimistic evaluation even when the tensor code is correct."
+      ],
+      "code": {
+        "title": "Create non-overlapping daily windows",
+        "language": "python",
+        "source": "import torch\n\nhours = torch.randn(14 * 24, 6)  # time, feature\nwindow = 24\nassert hours.shape[0] % window == 0\ndays = hours.reshape(-1, window, hours.shape[1])\ndays = days.movedim(2, 1)  # sample, feature, time\nassert days.shape == (14, 6, 24)"
+      },
+      "points": [
+        "State whether the model expects N × T × F or N × F × T.",
+        "Keep timestamps until ordering and gaps have been validated.",
+        "Decide whether windows overlap and how that affects split leakage."
+      ]
+    },
+    {
+      "id": "text-representation",
+      "title": "Separate text symbols from model identifiers",
+      "summary": "A vocabulary makes the reversible mapping between human-readable tokens and integer IDs.",
+      "body": [
+        "The Jane Austen notebook demonstrates character-level one-hot encoding. It is useful for seeing that text must become numbers, but a dense one-hot matrix grows with vocabulary size and discards the original token strings unless the mapping is stored.",
+        "Represent token IDs as integer tensors and keep an ordered vocabulary for encoding and decoding. Variable-length sequences require a batching policy such as padding plus a mask; silently truncating each item to the shortest length changes the data."
+      ],
+      "code": {
+        "title": "Build a reversible character vocabulary",
+        "language": "python",
+        "source": "import torch\n\ntext = \"sense and sensibility\"\nvocabulary = sorted(set(text))\ntoken_to_id = {token: index for index, token in enumerate(vocabulary)}\nids = torch.tensor([token_to_id[token] for token in text], dtype=torch.long)\ndecoded = \"\".join(vocabulary[index] for index in ids.tolist())\nassert decoded == text"
+      },
+      "callouts": [
+        {
+          "kind": "note",
+          "title": "IDs are not measurements",
+          "body": "Token ID 20 is not twice token ID 10. An embedding layer learns a useful continuous representation later."
+        }
+      ]
+    },
+    {
+      "id": "audio-video",
+      "title": "Keep time and channel conventions visible in audio and video",
+      "summary": "Decoders provide samples or frames; preprocessing determines channel order, scale, rate, and fixed-size batches.",
+      "body": [
+        "Audio can be represented as channel × sample waveforms or as time-frequency features. Record the sample rate because the same tensor length represents different durations at different rates. For stereo-to-mono conversion, state whether channels are averaged or selected.",
+        "Video commonly adds a time axis to an image tensor. Decode a bounded number of frames, arrange them consistently, and record the frame rate. Large clips should be loaded lazily through a Dataset rather than materialized as one enormous tensor."
+      ],
+      "code": {
+        "title": "Validate temporal tensor contracts",
+        "language": "python",
+        "source": "import torch\n\nwaveform = torch.randn(2, 16000)  # channel, sample\nsample_rate = 16000\nmono = waveform.mean(dim=0, keepdim=True)\nassert mono.shape == (1, sample_rate)\n\nvideo = torch.rand(12, 3, 64, 64)  # time, channel, height, width\nclip = video.movedim(0, 1)         # channel, time, height, width\nassert clip.shape == (3, 12, 64, 64)"
+      },
+      "callouts": [
+        {
+          "kind": "warning",
+          "title": "Decoder choice is a dependency boundary",
+          "body": "The book uses imageio and SciPy for several media formats. Keep those calls isolated so the tensor contract survives a future decoder replacement."
+        }
+      ]
+    }
+  ],
+  "modern": [
+    {
+      "topic": "Vision transforms",
+      "book": "Image examples decode through imageio and manually rearrange NumPy arrays.",
+      "current": "Use TorchVision transforms v2 for the core image path",
+      "reason": "The current v2 pipeline makes image conversion, scaled dtype conversion, normalization, and multi-input vision transforms explicit while still accepting tensors."
+    },
+    {
+      "topic": "Data boundaries",
+      "book": "Many examples perform file decoding and tensor preparation in adjacent notebook cells.",
+      "current": "Separate decoders from pure tensor preprocessors",
+      "reason": "Small, typed boundaries make layouts testable, keep specialist formats replaceable, and prepare the code for Dataset and DataLoader in Chapter 7."
+    },
+    {
+      "topic": "Memory sharing",
+      "book": "NumPy arrays are frequently converted with torch.from_numpy.",
+      "current": "Document shared CPU storage and clone when ownership must be independent",
+      "reason": "Zero-copy conversion can be efficient, but later NumPy or tensor mutation can silently affect the other representation."
+    }
+  ],
+  "notebookLinks": [
+    {
+      "slug": "p1ch4--1_image_dog",
+      "reason": "Trace image decoding, channel rearrangement, batching, casting, and channel normalization."
+    },
+    {
+      "slug": "p1ch4--2_volumetric_ct",
+      "reason": "Study a depth-aware medical volume while preserving geometry metadata outside the tensor."
+    },
+    {
+      "slug": "p1ch4--3_tabular_wine",
+      "reason": "Separate features and targets, encode categories, and fit continuous-feature statistics on training data."
+    },
+    {
+      "slug": "p1ch4--4_time_series_bikes",
+      "reason": "Verify how hourly rows become daily samples and why chronological splits matter."
+    },
+    {
+      "slug": "p1ch4--5_text_jane_austen",
+      "reason": "Compare character one-hot encoding with a reversible integer-ID vocabulary."
+    },
+    {
+      "slug": "p1ch4--x_audio_chirp",
+      "reason": "Track sample rate, channel layout, waveform scaling, and the move to a time-frequency representation."
+    },
+    {
+      "slug": "p1ch4--x_video_cockatoo",
+      "reason": "Trace frame decoding into an explicit time/channel/height/width clip contract."
+    }
+  ],
+  "exercises": [
+    {
+      "title": "Write a modality card",
+      "prompt": "Choose one upstream modality and document one sample's axes, dtype, value range, units, target, missing-data rule, decoder, and normalization source. Add assertions that enforce the card.",
+      "success": "a malformed shape, dtype, or non-finite value produces a clear failure before a model call"
+    },
+    {
+      "title": "Separate decode from prepare",
+      "prompt": "Refactor one notebook path into decode(path) and prepare(tensor, metadata). Test prepare() using a synthetic tensor without touching the file system.",
+      "success": "the pure preparation test verifies the final contract and the decoder can be replaced without changing it"
+    },
+    {
+      "title": "Batch variable data",
+      "prompt": "Create three unequal-length text or audio samples and write a collate function that pads them while returning original lengths or a mask.",
+      "success": "the batch preserves every original sample, makes padding positions identifiable, and contains no silent truncation"
+    }
+  ],
+  "references": [
+    {
+      "type": "Teaching reference",
+      "title": "Learn PyTorch for Deep Learning",
+      "url": "https://www.learnpytorch.io/"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Tensors tutorial",
+      "url": "https://docs.pytorch.org/tutorials/beginner/basics/tensorqs_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "TorchVision transforms",
+      "url": "https://docs.pytorch.org/vision/stable/transforms.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "TorchVision image decoding and encoding",
+      "url": "https://docs.pytorch.org/vision/stable/io.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "Writing custom datasets and transforms",
+      "url": "https://docs.pytorch.org/tutorials/beginner/data_loading_tutorial.html"
+    },
+    {
+      "type": "Official PyTorch",
+      "title": "torch.utils.data",
+      "url": "https://docs.pytorch.org/docs/stable/data.html"
+    }
+  ]
+}

@@ -48,7 +48,7 @@
       "code": {
         "title": "Device-neutral inference",
         "language": "python",
-        "source": "accelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nmodel = model.to(device)\nbatch = batch.to(device)\nmodel.eval()\nwith torch.inference_mode():\n    logits = model(batch)\n\nprint(logits.shape, logits.device)"
+        "source": "import torch\n\n# Prerequisites: create `model` and `batch` for your chosen architecture.\naccelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nmodel = model.to(device)\nbatch = batch.to(device)\nmodel.eval()\nwith torch.inference_mode():\n    logits = model(batch)\n\nprint(logits.shape, logits.device)"
       },
       "callouts": [
         {
@@ -111,7 +111,7 @@
       "code": {
         "title": "Load a trusted state dictionary",
         "language": "python",
-        "source": "state = torch.load(\n    \"model_state.pt\",\n    map_location=\"cpu\",\n    weights_only=True,\n)\nresult = model.load_state_dict(state, strict=True)\nprint(result)"
+        "source": "import torch\n\n# Prerequisites: recreate `model` and provide its matching state-dict file.\nstate = torch.load(\n    \"model_state.pt\",\n    map_location=\"cpu\",\n    weights_only=True,\n)\nresult = model.load_state_dict(state, strict=True)\nprint(result)"
       },
       "callouts": [
         {
@@ -132,7 +132,7 @@
       "code": {
         "title": "A current classification step",
         "language": "python",
-        "source": "model.train()\nimages, targets = next(iter(train_loader))\nimages, targets = images.to(device), targets.to(device)\n\noptimizer.zero_grad(set_to_none=True)\nlogits = model(images)\nloss = torch.nn.functional.cross_entropy(logits, targets)\nloss.backward()\noptimizer.step()"
+        "source": "import torch\n\n# Prerequisites: define `model`, `train_loader`, `device`, and `optimizer`.\nmodel.train()\nimages, targets = next(iter(train_loader))\nimages, targets = images.to(device), targets.to(device)\n\noptimizer.zero_grad(set_to_none=True)\nlogits = model(images)\nloss = torch.nn.functional.cross_entropy(logits, targets)\nloss.backward()\noptimizer.step()"
       }
     }
   ],

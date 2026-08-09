@@ -39,6 +39,7 @@ for (const lesson of lessons) {
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(section.id || "") || reservedSectionIds.has(section.id)) failures.push(`${prefix}: unsafe or reserved section ID ${section.id}`);
     if (section.code && (!section.code.title || !section.code.language || !section.code.source)) failures.push(`${prefix}: incomplete code block in ${section.id}`);
     if (section.code?.language === "python" && /(?:\.data\b|pretrained\s*=\s*True|torch\.cuda\.amp|torch\.jit\.)/.test(section.code.source)) failures.push(`${prefix}: deprecated API in current Python example ${section.id}`);
+    if (section.code?.language === "python" && /\btorch\./.test(section.code.source) && !/(?:^|\n)\s*import torch(?:\s|$)/m.test(section.code.source)) failures.push(`${prefix}: Python example ${section.id} uses torch without importing it`);
   }
   if (!Array.isArray(lesson.modern) || lesson.modern.length < 2) failures.push(`${prefix}: expected at least 2 book-to-current review notes`);
   for (const item of lesson.modern || []) if (!item.topic || !item.book || !item.current || !item.reason) failures.push(`${prefix}: incomplete book-to-current review note`);

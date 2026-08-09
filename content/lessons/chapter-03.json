@@ -41,7 +41,7 @@
       "code": {
         "title": "Observe shared NumPy storage",
         "language": "python",
-        "source": "import numpy as np\n\narray = np.array([1.0, 2.0, 3.0], dtype=np.float32)\nshared = torch.from_numpy(array)\nowned = torch.tensor(array)\n\narray[0] = 99.0\nprint(shared)  # sees 99\nprint(owned)   # retains 1"
+        "source": "import numpy as np\nimport torch\n\narray = np.array([1.0, 2.0, 3.0], dtype=np.float32)\nshared = torch.from_numpy(array)\nowned = torch.tensor(array)\n\narray[0] = 99.0\nprint(shared)  # sees 99\nprint(owned)   # retains 1"
       },
       "callouts": [
         {
@@ -62,7 +62,7 @@
       "code": {
         "title": "Trace contiguity and storage",
         "language": "python",
-        "source": "base = torch.arange(12).reshape(3, 4)\ntransposed = base.transpose(0, 1)\nflattened = transposed.reshape(-1)\n\nprint(base.stride(), base.is_contiguous())\nprint(transposed.stride(), transposed.is_contiguous())\nprint(flattened.stride(), flattened.is_contiguous())\n\ntransposed[0, 0] = -1\nassert base[0, 0].item() == -1"
+        "source": "import torch\n\nbase = torch.arange(12).reshape(3, 4)\ntransposed = base.transpose(0, 1)\nflattened = transposed.reshape(-1)\n\nprint(base.stride(), base.is_contiguous())\nprint(transposed.stride(), transposed.is_contiguous())\nprint(flattened.stride(), flattened.is_contiguous())\n\ntransposed[0, 0] = -1\nassert base[0, 0].item() == -1"
       },
       "callouts": [
         {
@@ -83,7 +83,7 @@
       "code": {
         "title": "Normalize an image batch by channel",
         "language": "python",
-        "source": "batch = torch.rand(16, 3, 32, 32)\nmean = torch.tensor([0.49, 0.48, 0.45]).reshape(1, 3, 1, 1)\nstd = torch.tensor([0.25, 0.24, 0.26]).reshape(1, 3, 1, 1)\nnormalized = (batch - mean) / std\n\nassert normalized.shape == batch.shape"
+        "source": "import torch\n\nbatch = torch.rand(16, 3, 32, 32)\nmean = torch.tensor([0.49, 0.48, 0.45]).reshape(1, 3, 1, 1)\nstd = torch.tensor([0.25, 0.24, 0.26]).reshape(1, 3, 1, 1)\nnormalized = (batch - mean) / std\n\nassert normalized.shape == batch.shape"
       },
       "callouts": [
         {
@@ -104,7 +104,7 @@
       "code": {
         "title": "A portable device boundary",
         "language": "python",
-        "source": "accelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nx = torch.randn(4, 5, device=device, requires_grad=True)\ny = x.square().sum(dim=1)\narray = y.detach().cpu().numpy()\nprint(array.shape)"
+        "source": "import torch\n\naccelerator = torch.accelerator.current_accelerator(check_available=True)\ndevice = accelerator if accelerator is not None else torch.device(\"cpu\")\n\nx = torch.randn(4, 5, device=device, requires_grad=True)\ny = x.square().sum(dim=1)\narray = y.detach().cpu().numpy()\nprint(array.shape)"
       }
     },
     {
@@ -124,7 +124,7 @@
       "code": {
         "title": "Make axis intent explicit without named tensors",
         "language": "python",
-        "source": "CHANNEL = 1\n\ndef rgb_to_gray_nchw(images: torch.Tensor) -> torch.Tensor:\n    assert images.ndim == 4 and images.shape[CHANNEL] == 3\n    weights = images.new_tensor([0.2126, 0.7152, 0.0722])\n    weights = weights.reshape(1, 3, 1, 1)\n    return (images * weights).sum(dim=CHANNEL, keepdim=True)\n\ngray = rgb_to_gray_nchw(torch.rand(2, 3, 8, 8))\nassert gray.shape == (2, 1, 8, 8)"
+        "source": "import torch\n\nCHANNEL = 1\n\ndef rgb_to_gray_nchw(images: torch.Tensor) -> torch.Tensor:\n    assert images.ndim == 4 and images.shape[CHANNEL] == 3\n    weights = images.new_tensor([0.2126, 0.7152, 0.0722])\n    weights = weights.reshape(1, 3, 1, 1)\n    return (images * weights).sum(dim=CHANNEL, keepdim=True)\n\ngray = rgb_to_gray_nchw(torch.rand(2, 3, 8, 8))\nassert gray.shape == (2, 1, 8, 8)"
       },
       "callouts": [
         {
