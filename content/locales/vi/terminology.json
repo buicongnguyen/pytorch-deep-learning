@@ -1,0 +1,37 @@
+{
+  "concepts": {
+    "Python abstraction": "trừu tượng hóa Python",
+    "Python experiment": "thí nghiệm Python",
+    "attention": "cơ chế chú ý",
+    "automatic differentiation": "vi phân tự động",
+    "convolution": "tích chập",
+    "data loading": "nạp dữ liệu",
+    "device placement": "đặt trên thiết bị",
+    "diffusion": "khuếch tán",
+    "distributed execution": "thực thi phân tán",
+    "environment setup": "thiết lập môi trường",
+    "evaluation": "đánh giá",
+    "export and deployment": "xuất và triển khai",
+    "forward pass": "lượt truyền xuôi",
+    "imports": "nhập thư viện",
+    "loss": "hàm mất mát",
+    "model definition": "định nghĩa mô hình",
+    "notebook structure": "cấu trúc notebook",
+    "optimization": "tối ưu hóa",
+    "preprocessing": "tiền xử lý",
+    "pretrained model": "mô hình huấn luyện sẵn",
+    "reproducibility": "khả năng tái lập",
+    "tensor shapes": "hình dạng tensor",
+    "tokenization": "token hóa",
+    "visualization": "trực quan hóa"
+  },
+  "referenceTypes": {
+    "Official PyTorch": "PyTorch chính thức",
+    "Official TorchVision": "TorchVision chính thức",
+    "Primary dataset": "Bộ dữ liệu gốc",
+    "Primary imaging API": "API ảnh gốc",
+    "Primary model reference": "Tài liệu mô hình gốc",
+    "Research paper": "Bài báo nghiên cứu",
+    "Teaching reference": "Tài liệu tham khảo giảng dạy"
+  }
+}

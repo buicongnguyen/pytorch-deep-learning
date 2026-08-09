@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "import": "node scripts/import-catalog.mjs",
-    "build": "node scripts/build.mjs && node scripts/check.mjs",
+    "build": "node scripts/check.mjs --source-only && node scripts/build.mjs && node scripts/check.mjs",
     "check": "node scripts/check.mjs",
     "start": "npm run build && node scripts/serve.mjs"
   },

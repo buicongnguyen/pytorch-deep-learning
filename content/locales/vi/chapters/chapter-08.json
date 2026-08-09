@@ -1,0 +1,838 @@
+{
+  "chapter": {
+    "number": 8,
+    "title": "Tích chập",
+    "summary": "Dùng trường tiếp nhận cục bộ, kênh, pooling và kiến trúc tích chập sâu hơn để cải thiện mô hình ảnh."
+  },
+  "lesson": {
+    "chapter": 8,
+    "outcomes": [
+      "Tính toán hình dạng kênh và không gian qua các layer tích chập, kích hoạt, pooling và phân loại.",
+      "Giải thích trường tiếp nhận cục bộ và việc chia sẻ tham số bằng cách so sánh bộ lọc viết tay với kernel được học.",
+      "Xây dựng bộ phân loại tích chập tránh các kích thước làm phẳng cố định dễ vỡ.",
+      "Đánh giá chuẩn hóa và kết nối residual, sau đó chỉ đo AMP hoặc biên dịch khi đã thiết lập đường cơ sở eager float32."
+    ],
+    "sections": [
+      {
+        "id": "local-filters",
+        "title": "Xem tích chập như một phép toán cục bộ dùng chung",
+        "summary": "Một kernel kiểm tra các giá trị lân cận và tái sử dụng cùng tham số tại nhiều vị trí không gian.",
+        "body": [
+          "Layer dense nối mọi giá trị đầu vào với mọi đặc trưng đầu ra. Trái lại, tích chập áp dụng một kernel nhỏ tại nhiều vị trí. Kernel dùng chung khiến số tham số không phụ thuộc vào chiều rộng và chiều cao ảnh, đồng thời mã hóa giả định hữu ích rằng một mẫu cục bộ có thể quan trọng ở bất kỳ vị trí nào.",
+          "PyTorch triển khai phép toán dưới dạng tương quan chéo, là quy ước Conv2d sử dụng. Layer học các giá trị kernel trong quá trình huấn luyện; kernel phát hiện cạnh và làm mờ viết tay cho thấy feature map biểu diễn gì trước khi việc học bắt đầu."
+        ],
+        "code": {
+          "title": "Áp dụng kernel phát hiện cạnh cố định"
+        },
+        "points": [
+          "Layout đầu vào là N × in_channels × H × W.",
+          "Layout kernel là out_channels × in_channels/groups × kH × kW.",
+          "Mỗi kênh đầu ra sở hữu một ngân hàng kernel trải trên các kênh đầu vào.",
+          "Khi được bật, bias đóng góp một vô hướng được học cho mỗi kênh đầu ra."
+        ]
+      },
+      {
+        "id": "shape-arithmetic",
+        "title": "Tính mọi hình dạng đầu ra",
+        "summary": "Kernel, padding, stride và dilation xác định kích thước không gian; out_channels xác định độ sâu đặc trưng.",
+        "body": [
+          "Trên mỗi trục không gian, Conv2d kết hợp kích thước đầu vào với padding, dilation, kích thước kernel và stride. Padding có thể giữ nguyên kích thước cho kernel lẻ với stride bằng một, còn stride lớn hơn một sẽ lấy mẫu thưa đáp ứng.",
+          "Hãy viết hình dạng mong đợi bên cạnh mỗi layer trước khi chạy mô hình. Forward hook hoặc một batch tổng hợp nhỏ sau đó có thể xác minh phép tính. Thói quen này ngăn layer Linear cuối trở thành một hằng số thử-sai."
+        ],
+        "code": {
+          "title": "Theo dõi hình dạng qua tích chập"
+        },
+        "callouts": [
+          {
+            "title": "Đừng dùng reshape để hoán đổi trục",
+            "body": "reshape thay đổi cách nhóm logic của vùng lưu trữ; permute hoặc movedim mới thay đổi thứ tự trục."
+          }
+        ]
+      },
+      {
+        "id": "pooling-receptive-field",
+        "title": "Đánh đổi chi tiết không gian để lấy ngữ cảnh",
+        "summary": "Pooling và phép toán có stride thu nhỏ feature map, trong khi các đơn vị về sau phụ thuộc vào vùng đầu vào ngày càng lớn.",
+        "body": [
+          "Max pooling giữ giá trị mạnh nhất trong một cửa sổ cục bộ; average pooling tóm tắt cửa sổ. Downsampling giảm chi phí tính toán về sau và làm trường tiếp nhận hiệu dụng tăng lên, nhưng thu nhỏ quá nhiều ở sớm có thể loại bỏ đặc trưng nhỏ.",
+          "Hãy theo dõi cả hình dạng tensor lẫn trường tiếp nhận về mặt khái niệm. Hai phép tích chập 3 × 3 có phi tuyến xen giữa thực hiện nhiều hơn một phép so sánh cục bộ: layer thứ hai kết hợp các mẫu mà layer thứ nhất tìm thấy trên một vùng rộng hơn."
+        ],
+        "code": {
+          "title": "Bộ trích xuất đặc trưng có hình dạng ổn định"
+        }
+      },
+      {
+        "id": "adaptive-classifier",
+        "title": "Loại bỏ giả định dễ vỡ về kích thước làm phẳng",
+        "summary": "Adaptive pooling tạo hình học đầu ra được khai báo cho mọi chiều cao và chiều rộng đầu vào được hỗ trợ.",
+        "body": [
+          "Đầu vào Linear viết cứng như 8 × 8 × 64 chỉ hoạt động khi mọi lựa chọn không gian phía trước không đổi. AdaptiveAvgPool2d tạo kích thước đầu ra được yêu cầu, độc lập với các chiều không gian đầu vào, nhờ đó ranh giới bộ phân loại trở nên tường minh.",
+          "Global average pooling xuống 1 × 1 tóm tắt mỗi kênh thành một đặc trưng. Nó giảm mạnh số tham số bộ phân loại và cho phép cùng mô hình nhận nhiều kích thước ảnh, miễn là các phép tích chập phía trước hỗ trợ."
+        ],
+        "code": {
+          "title": "CNN chấp nhận nhiều kích thước"
+        },
+        "callouts": [
+          {
+            "title": "Mô hình trả về logits",
+            "body": "Giữ đầu ra Linear cuối chưa chuẩn hóa khi huấn luyện với CrossEntropyLoss."
+          }
+        ]
+      },
+      {
+        "id": "normalization-residuals",
+        "title": "Ổn định đường sâu hơn và bảo toàn ánh xạ đồng nhất",
+        "summary": "Batch normalization mang trạng thái chạy; block residual cộng một hiệu chỉnh được học vào đường tắt tương thích.",
+        "body": [
+          "BatchNorm2d chuẩn hóa từng kênh bằng thống kê mini-batch trong huấn luyện và mặc định duy trì thống kê chạy để đánh giá. Vì vậy nó vừa là phép tính vừa là trạng thái module. model.train() và model.eval() phải được chọn có chủ đích.",
+          "Block residual trả về shortcut + residual khi hình dạng khớp, tạo cho block một đường đồng nhất trực tiếp. Nếu kích thước không gian hoặc số kênh thay đổi, shortcut cần phép chiếu tường minh. Hãy kiểm thử hình dạng phép cộng thay vì dựa vào broadcasting."
+        ],
+        "code": {
+          "title": "Block residual giữ nguyên hình dạng"
+        },
+        "callouts": [
+          {
+            "title": "Chế độ đánh giá ảnh hưởng đến BatchNorm",
+            "body": "inference_mode() tắt ghi gradient nhưng không chuyển BatchNorm từ thống kê batch sang hành vi đánh giá; hãy gọi cả eval()."
+          },
+          {
+            "title": "Đừng nhân một danh sách module",
+            "body": "Notebook tích chập được ghim dùng n_blocks * [ResBlock(...)], thao tác này lặp lại cùng một instance module Python và buộc mọi block dùng chung tham số. Hãy tạo từng block độc lập bằng comprehension hoặc generator như stack đã sửa ở trên."
+          }
+        ]
+      },
+      {
+        "id": "cnn-training",
+        "title": "Huấn luyện CNN bằng cùng vòng lặp đã duyệt",
+        "summary": "Tích chập thay đổi mô hình, không thay đổi trách nhiệm của dữ liệu, hàm mất mát, autograd, optimizer và validation.",
+        "body": [
+          "Tái sử dụng các loader huấn luyện và validation riêng của Chương 7. Chuyển mô hình cùng batch sang bộ tăng tốc đã chọn, trả về logits thô và tính CrossEntropyLoss. Xóa gradient trước mỗi lượt lan truyền ngược và tích lũy chỉ số từ các giá trị đã tách khỏi đồ thị.",
+          "Validation chạy với tham số cố định dưới eval() và inference_mode(). Lưu state dictionary tốt nhất, không lưu toàn bộ mô hình Python. So sánh CNN với MLP làm phẳng để lợi ích của cấu trúc cục bộ được đo thay vì mặc định tin là có.",
+          "Bước kiểm tra độc lập bên dưới dùng batch tổng hợp để có thể kiểm tra hợp đồng thiết bị, dtype, hình dạng, hàm mất mát và cập nhật mà không cần tải dữ liệu. Hãy thay batch đó bằng batch từ loader đã duyệt của Chương 7 cho thí nghiệm thực."
+        ],
+        "code": {
+          "title": "Một bước CNN trung lập với thiết bị"
+        }
+      },
+      {
+        "id": "performance-extension",
+        "title": "Chỉ tối ưu một đường cơ sở đã đo",
+        "summary": "AMP và torch.compile có thể cải thiện khối lượng công việc được hỗ trợ, nhưng tính đúng đắn và phép đo đại diện phải có trước.",
+        "body": [
+          "Độ chính xác hỗn hợp tự động chọn độ chính xác thấp hơn theo từng phép toán bên trong vùng autocast. API hiện tại nằm dưới torch.amp; các điểm vào torch.cuda.amp cũ đã bị ngừng khuyến nghị. Gradient scaling thường được ghép với huấn luyện float16 để giảm nguy cơ underflow.",
+          "torch.compile có thể tối ưu mô hình hoặc bước huấn luyện qua thu thập đồ thị và sinh mã. Hãy khởi động trước, đồng bộ thiết bị bất đồng bộ khi đo thời gian, rồi so sánh đầu ra và chỉ số validation với đường cơ sở eager float32. Một mô hình giảng dạy nhỏ có thể không chạy nhanh hơn sau chi phí biên dịch."
+        ],
+        "code": {
+          "title": "Bảo vệ và đo phần mở rộng CUDA AMP"
+        },
+        "callouts": [
+          {
+            "title": "Chỉ bật ở nơi được hỗ trợ",
+            "body": "Khối này yêu cầu CUDA một cách tường minh và sẽ bỏ qua nếu không có. Xem các thời gian đo là kết quả cục bộ, lặp lại trên dữ liệu đại diện và giữ eager float32 làm chuẩn tham chiếu di động về tính đúng đắn."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Hình dạng bộ phân loại",
+        "book": "Notebook suy ra và đôi khi viết cứng số đặc trưng đã làm phẳng sau tích chập và pooling.",
+        "current": "Dùng AdaptiveAvgPool2d hoặc suy ra ranh giới từ một ví dụ",
+        "reason": "Hợp đồng bộ phân loại trở nên tường minh và ít bị vỡ hơn khi kích thước đầu vào hoặc layer không gian phía trước thay đổi."
+      },
+      {
+        "topic": "Chọn bộ tăng tốc",
+        "book": "Mã huấn luyện chọn trực tiếp CUDA khi có sẵn.",
+        "current": "Dùng torch.accelerator và giữ đường dự phòng CPU",
+        "reason": "Cùng mô hình có thể theo abstraction thiết bị hiện tại trên các backend tăng tốc được hỗ trợ."
+      },
+      {
+        "topic": "Độ chính xác hỗn hợp",
+        "book": "Các thí nghiệm tích chập cốt lõi dùng huấn luyện dấu phẩy động thông thường.",
+        "current": "Dùng API torch.amp cho phần mở rộng tùy chọn đã đo",
+        "reason": "Các điểm vào torch.cuda.amp và torch.cpu.amp đã bị ngừng khuyến nghị; API torch.amp có chỉ định thiết bị là giao diện hiện tại."
+      },
+      {
+        "topic": "Biên dịch",
+        "book": "Mạng chạy theo eager.",
+        "current": "So sánh torch.compile với đường cơ sở eager float32",
+        "reason": "Biên dịch có thể tối ưu đồ thị được hỗ trợ, nhưng chi phí khởi động, graph break, thiết bị và kích thước khối lượng công việc quyết định nó có hữu ích hay không."
+      },
+      {
+        "topic": "Stack residual",
+        "book": "Notebook được ghim nhân một danh sách một phần tử chứa block residual.",
+        "current": "Tạo ResidualBlock mới cho mỗi vị trí độ sâu",
+        "reason": "Phép nhân danh sách Python lặp lại tham chiếu đối tượng; dùng comprehension hoặc generator ngăn việc ngoài ý muốn chia sẻ tham số giữa các block."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch8--1_convolution",
+        "reason": "Dùng notebook chính cho bộ lọc cố định, theo dõi hình dạng Conv2d, pooling, huấn luyện CNN, chuyển thiết bị, mô hình sâu hơn và kết nối residual."
+      },
+      {
+        "slug": "p1ch8--scratch",
+        "reason": "Xem lại batch normalization và kiến trúc thay thế như các thí nghiệm có kiểm soát thay vì một phụ lục thiếu cấu trúc."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Chứng minh dấu vết hình dạng",
+        "prompt": "Với CNN gồm ba phép tích chập và hai layer pooling, hãy tính mọi đầu ra N × C × H × W trước khi thực thi. Đăng ký forward hook và so sánh dấu vết quan sát được.",
+        "success": "mọi hình dạng dự đoán đều khớp và mỗi thay đổi được giải thích bằng kênh, kernel, padding, stride hoặc pooling"
+      },
+      {
+        "title": "Loại bỏ kích thước làm phẳng cố định",
+        "prompt": "Tái cấu trúc một CNN thượng nguồn để dùng AdaptiveAvgPool2d và kiểm thử các batch 32 × 32, 40 × 48 và 64 × 64 mà không đổi bộ phân loại.",
+        "success": "cả ba đầu vào đều trả về logits N × 2 và không có số đặc trưng nào được viết cứng từ một độ phân giải không gian"
+      },
+      {
+        "title": "Thực hiện đánh giá kiến trúc công bằng",
+        "prompt": "So sánh CNN thường, có batch normalization và residual bằng cùng split, phép biến đổi, seed, ngân sách optimizer và hàm đánh giá. Báo cáo số tham số, đường cong mất mát và độ chính xác validation từng lớp.",
+        "success": "phép so sánh kiểm soát các biến ngoài kiến trúc và hỗ trợ kết luận bằng cả bằng chứng học lẫn validation"
+      },
+      {
+        "title": "Đo biên dịch một cách trung thực",
+        "prompt": "Chỉ biên dịch mô hình eager đã chọn sau khi ghi đầu ra và chỉ số validation. Kiểm tra tính tương đương đầu ra eager–compiled, ghi riêng lần gọi compiled đầu tiên, khởi động cả hai đường, đồng bộ bộ tăng tốc đang hoạt động quanh các lần đo lặp và báo cáo kết quả mà không mặc định có tăng tốc. Nếu backend hoặc toolchain không có, hãy ghi nhận việc bỏ qua được hỗ trợ thay vì đổi mô hình.",
+        "success": "báo cáo tách độ trễ biên dịch khỏi thời gian ổn định, dùng đầu vào lặp đại diện cùng đồng bộ, xác minh tính tương đương số và validation, đồng thời chỉ đưa ra khẳng định hiệu năng có bằng chứng"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu tham khảo giảng dạy",
+        "title": "Học Deep Learning với PyTorch"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Hàm conv2d"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Conv2d"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "AdaptiveAvgPool2d"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "BatchNorm2d"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Đăng ký module và các instance trùng lặp"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Bộ tăng tốc hiện tại"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Độ chính xác hỗn hợp tự động"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.compile"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch8--1_convolution",
+      "title": "Tích chập",
+      "summary": "Xây dựng bộ lọc và mạng tích chập trong khi theo dõi các chiều không gian và kênh.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 3 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 4 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình"
+          ],
+          "explanation": "Ô 6 xây dựng mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tích chập"
+          ],
+          "explanation": "Ô 7 xây dựng mô hình."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 8 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 9 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 10 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 11 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `plot_images`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô 13 xây dựng mô hình, sau đó truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 15 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tích chập"
+          ],
+          "explanation": "Ô 16 xây dựng mô hình."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 17 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tích chập"
+          ],
+          "explanation": "Ô 18 xây dựng mô hình."
+        },
+        {
+          "number": 19,
+          "concepts": [
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `plot_images`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 20,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 20 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 21,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô 21 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 22,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tích chập"
+          ],
+          "explanation": "Ô 22 xây dựng mô hình."
+        },
+        {
+          "number": 23,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tích chập"
+          ],
+          "explanation": "Ô 23 xây dựng mô hình."
+        },
+        {
+          "number": 24,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 24 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 25,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 25 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 26,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 26 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 27,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 28,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 28 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 29,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 30,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 30 truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 31,
+          "concepts": [
+            "nhập thư viện",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 32,
+          "concepts": [
+            "nạp dữ liệu",
+            "hàm mất mát",
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 32 nạp hoặc sắp xếp dữ liệu, sau đó đo sai số dự đoán, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 33,
+          "concepts": [
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `validate`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 34,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 34 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 35,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 35 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 36,
+          "concepts": [
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 36 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 37,
+          "concepts": [
+            "nhập thư viện",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 38,
+          "concepts": [
+            "nạp dữ liệu",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 38 nạp hoặc sắp xếp dữ liệu, sau đó đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 39,
+          "concepts": [
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "lượt truyền xuôi",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `validate`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 40,
+          "concepts": [
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 40 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 41,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetWidth`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 42,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 42 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 43,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetWidth`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 44,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 44 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 45,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 45 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 46,
+          "concepts": [
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop_l2reg`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 47,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 47 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 48,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetDropout`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 49,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 49 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 50,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetBatchNorm`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 51,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 51 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 52,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetDepth`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 53,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 53 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 54,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetRes`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 55,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 55 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 56,
+          "concepts": [
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `ResBlock`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 57,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `NetResDeep`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 58,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 58 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 59,
+          "concepts": [
+            "đánh giá",
+            "trực quan hóa",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 59 đánh giá kết quả, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch8--scratch",
+      "title": "Bản thử nghiệm",
+      "summary": "Làm qua ví dụ thử nghiệm và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "trực quan hóa",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "trực quan hóa",
+            "khuếch tán",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "trực quan hóa",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `NetWithoutBN`, `NetWithBN`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nhập thư viện",
+            "lượt truyền xuôi",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 4 truyền dữ liệu qua mô hình, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "tiền xử lý",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 7 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình, sau đó truyền dữ liệu qua mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        }
+      ]
+    }
+  ]
+}

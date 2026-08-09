@@ -1,0 +1,147 @@
+{
+  "chapter": {
+    "number": 11,
+    "title": "Dự án chẩn đoán hình ảnh y khoa",
+    "summary": "Định hình toàn bộ dự án ung thư phổi từ đầu đến cuối: dữ liệu CT thô, phát hiện ứng viên, phân loại, phân đoạn, đánh giá và các ràng buộc vận hành."
+  },
+  "lesson": {
+    "chapter": 11,
+    "outcomes": [
+      "Mô tả dự án nốt phổi trên CT như một chuỗi quyết định về dữ liệu, ứng viên, phân loại và phân đoạn.",
+      "Xác định ranh giới tập huấn luyện, xác thực và kiểm thử ở cấp bệnh nhân hoặc chuỗi ảnh trước khi tạo các mẫu dẫn xuất.",
+      "Viết bản kê khai khả năng tái lập bao quát danh tính dữ liệu, phần mềm, phần cứng, seed, cách chia tập và checkpoint.",
+      "Nêu rõ mục đích giáo dục, đơn vị đánh giá, các hạn chế và trạng thái phi lâm sàng của mô hình thu được."
+    ],
+    "sections": [
+      {
+        "id": "question-and-unit",
+        "title": "Xác định một câu hỏi dự đoán và một đơn vị đánh giá",
+        "summary": "Một hợp đồng dự án rõ ràng ngăn việc xem các crop ứng viên, chuỗi CT và bệnh nhân là những ví dụ có thể hoán đổi cho nhau.",
+        "body": [
+          "Dự án bắt đầu với các thể tích CT và vị trí ứng viên, sau đó yêu cầu bộ phân loại hoặc bộ phân đoạn mô tả đặc điểm của các vùng cục bộ. Hãy viết rõ đầu vào, đầu ra, định nghĩa nhãn đích và đơn vị đánh giá trước khi triển khai Dataset. Xác suất ở cấp crop và kết luận lâm sàng ở cấp bệnh nhân không phải là cùng một khẳng định.",
+          "Giữ một series_uid đã khử định danh hoặc mã bệnh nhân sẵn có gắn với mọi crop và mask dẫn xuất. Có thể tính metric trên các crop để gỡ lỗi, nhưng ranh giới chia tập và báo cáo cuối cùng phải phản ánh đơn vị độc lập được quy định trong hợp đồng dự án. Không đưa mã định danh trực tiếp của bệnh nhân hoặc các trường DICOM có khả năng nhận diện vào log, hình minh họa hay kho mã công khai."
+        ],
+        "points": [
+          "Đầu vào: một chuỗi CT hoặc tensor được tạo quanh tâm ứng viên từ chuỗi đó.",
+          "Đầu ra: logit, xác suất hoặc mask với cách diễn giải được tài liệu hóa rõ ràng.",
+          "Nhãn đích: nhãn bắt nguồn từ chú thích, bao gồm cách xử lý nhãn không chắc chắn hoặc bị thiếu.",
+          "Đơn vị đánh giá: ứng viên, chuỗi ảnh hoặc bệnh nhân, được nêu trước khi chọn metric."
+        ],
+        "callouts": [
+          {
+            "title": "Dành cho giáo dục, không dành cho lâm sàng",
+            "body": "Khóa học này tái hiện một dự án học tập. Nó không xác lập tính hợp lệ lâm sàng, độ an toàn, khả năng hiệu chuẩn, sự phù hợp quy định hay khả năng dùng để chẩn đoán."
+          }
+        ]
+      },
+      {
+        "id": "pipeline-map",
+        "title": "Lập bản đồ toàn bộ pipeline trước khi viết mã mô hình",
+        "summary": "Sơ đồ pipeline làm lộ rõ các phép biến đổi bị che khuất và nơi có thể mất thông tin nguồn gốc.",
+        "body": [
+          "Theo dõi toàn bộ quá trình từ thu nhận kho dữ liệu thô, tìm chuỗi ảnh, phân tích metadata, chuyển tọa độ thế giới sang voxel, tạo crop ứng viên, chuẩn hóa, tăng cường dữ liệu, tạo batch, dự đoán cho đến tổng hợp. Tại mỗi mũi tên, hãy ghi lại mã định danh và metadata tọa độ cần được giữ lại.",
+          "Các chương tiếp theo triển khai bản đồ này theo từng lớp: Chương 12 thiết lập các mẫu đáng tin cậy, Chương 13 và 14 huấn luyện và cải thiện bộ phân loại, còn Chương 15 bổ sung phân đoạn và các mô hình nền tảng. Một lỗi tọa độ hoặc chia tập ở thượng nguồn không thể được sửa bằng một mô hình lớn hơn ở hạ nguồn."
+        ],
+        "points": [
+          "Giữ nguyên các tệp nguồn thô làm đầu vào bất biến.",
+          "Đánh phiên bản metadata dẫn xuất và ghi lại phiên bản mã đã tạo ra nó.",
+          "Đưa phép chuẩn hóa và hình học crop vào hợp đồng đầu vào của mô hình.",
+          "Lưu đủ thông tin nguồn gốc để truy ngược mọi dự đoán về chuỗi ảnh và vị trí ban đầu."
+        ]
+      },
+      {
+        "id": "split-before-crops",
+        "title": "Chia danh tính trước khi tạo crop",
+        "summary": "Chia ngẫu nhiên các ứng viên dẫn xuất có thể đưa thông tin từ cùng một lần quét vào cả hai phía của phép đánh giá.",
+        "body": [
+          "Tạo các phân vùng huấn luyện, xác thực và kiểm thử ở cấp bệnh nhân bất cứ khi nào có ánh xạ từ bệnh nhân sang chuỗi ảnh. Chỉ dùng series_uid khi nguồn dữ liệu không thể liên kết nhiều chuỗi ảnh của cùng một bệnh nhân, đồng thời phải công bố hạn chế đó. Chỉ sau khi cố định cách chia theo danh tính, mỗi phân vùng mới được tạo crop ứng viên, phép tăng cường dữ liệu hoặc nhãn giả. Thứ tự này ngăn các ứng viên lân cận hoặc nhiều góc nhìn của cùng một cấu trúc giải phẫu vượt qua ranh giới.",
+          "Xem bản kê khai chia tập như dữ liệu: lưu lại, tính checksum, xem xét tỷ lệ nhãn theo từng phân vùng và khẳng định tính rời nhau mỗi khi chương trình khởi động. Không cải thiện một phân phối kiểm thử bất tiện bằng cách âm thầm lấy mẫu lại."
+        ],
+        "code": {
+          "title": "Dừng ngay khi phát hiện rò rỉ giữa các tập"
+        },
+        "callouts": [
+          {
+            "title": "Tăng cường dữ liệu không tạo ra tính độc lập",
+            "body": "Hai crop đã tăng cường từ cùng một chuỗi ảnh vẫn là các quan sát có liên hệ. Hãy giữ mọi dẫn xuất của một danh tính nguồn trong cùng một phân vùng."
+          }
+        ]
+      },
+      {
+        "id": "reproducibility-contract",
+        "title": "Ghi lại đủ ngữ cảnh để tái lập một kết quả",
+        "summary": "Chỉ một seed không thể xác định các khác biệt về dữ liệu, mã, môi trường hoặc phần cứng.",
+        "body": [
+          "Ghi lại phiên bản PyTorch và các dependency, commit mã, checksum dữ liệu nguồn, checksum cách chia tập, siêu tham số, seed ngẫu nhiên, accelerator và thiết lập xác định. PyTorch lưu ý rằng khả năng tái lập chính xác không được bảo đảm giữa các bản phát hành hoặc nền tảng, vì vậy bản kê khai xác định môi trường mà trong đó phép so sánh có ý nghĩa.",
+          "Lưu state_dict của mô hình và optimizer cùng epoch, scheduler, scaler và quyết định metric tốt nhất khi cần tiếp tục huấn luyện. Đặt cấu hình dạng dễ đọc, tương thích JSON bên cạnh checkpoint nhị phân. Chỉ tải các artifact có nguồn gốc đã xác minh; weights_only=True thu hẹp các kiểu đối tượng được chấp nhận nhưng không làm cho một tệp không rõ nguồn gốc trở nên đáng tin cậy."
+        ],
+        "code": {
+          "title": "Một bản kê khai lượt chạy tối thiểu"
+        }
+      },
+      {
+        "id": "review-gates",
+        "title": "Chọn các cổng rà soát trước khi kết quả tạo ra áp lực",
+        "summary": "Các kiểm tra được định trước giúp tách tiến độ kỹ thuật khỏi việc diễn giải metric theo kết quả đã biết.",
+        "body": [
+          "Yêu cầu xem xét mẫu bằng mắt và kiểm thử tọa độ trước khi huấn luyện, overfit một batch nhỏ trước lượt chạy đầy đủ, và chỉ chọn mô hình trên tập xác thực trước một lần đánh giá cuối cùng trên tập kiểm thử. Xác định metric chính và các lát cắt quan trọng, bao gồm hiệu năng theo kích thước ứng viên hoặc điều kiện thu nhận khi metadata cho phép.",
+          "Tài liệu hóa các trường hợp loại trừ đã biết, độ không chắc chắn của chú thích, tỷ lệ lớp, giả định tiền xử lý và ví dụ thất bại. Một báo cáo giáo dục tốt phải cho thấy mô hình sai ở đâu và cần bằng chứng nào trước khi mở rộng mục đích sử dụng."
+        ],
+        "points": [
+          "Cổng dữ liệu: đã kiểm tra danh tính, tọa độ, shape, khoảng giá trị và các ảnh đại diện.",
+          "Cổng huấn luyện: có thể overfit một tập con nhỏ cố định và tiếp tục từ checkpoint.",
+          "Cổng đánh giá: chỉ dùng dữ liệu xác thực để chọn ngưỡng và mô hình.",
+          "Cổng báo cáo: các thất bại và hạn chế xuất hiện bên cạnh metric tổng hợp."
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Khả năng tái lập của dự án",
+        "book": "Trình tự dự án nhấn mạnh một pipeline hoàn chỉnh, hoạt động xuyên suốt nhiều chương.",
+        "current": "Ghim PyTorch 2.13, danh tính dữ liệu, bản kê khai chia tập, phiên bản mã và phần cứng cùng nhau",
+        "reason": "PyTorch nêu rõ rằng kết quả giống hệt không được bảo đảm giữa các bản phát hành và nền tảng; một phép so sánh có ý nghĩa cần một môi trường được giới hạn rõ, chứ không chỉ torch.manual_seed."
+      },
+      {
+        "topic": "An toàn của checkpoint",
+        "book": "Các chương huấn luyện lưu tiến độ mô hình để sử dụng về sau.",
+        "current": "Ưu tiên checkpoint state_dict thuần và weights_only=True cho các lần tải đáng tin cậy",
+        "reason": "State dictionary có tính mô-đun và giảm phụ thuộc vào định nghĩa lớp được pickle. Hãy giữ cấu hình tương thích JSON và không bao giờ deserialize artifact từ nguồn không đáng tin cậy."
+      },
+      {
+        "topic": "Phạm vi đánh giá",
+        "book": "Phân loại ứng viên cung cấp một bài toán chẩn đoán hình ảnh y khoa đầu-cuối dễ tiếp cận.",
+        "current": "Nêu rõ cách chia theo cấp danh tính và các hạn chế phi lâm sàng",
+        "reason": "Các crop dẫn xuất từ cùng một lần quét có tương quan, và hiệu năng trên benchmark giáo dục không xác lập độ an toàn cho quyết định lâm sàng."
+      }
+    ],
+    "notebookLinks": [],
+    "exercises": [
+      {
+        "title": "Vẽ đồ thị nguồn gốc",
+        "prompt": "Tạo sơ đồ từ chuỗi CT thô đến dự đoán cuối cùng. Gắn nhãn mọi mã định danh được lưu, phép biến đổi tọa độ, artifact dẫn xuất và ranh giới chia tập, sau đó liệt kê ba nơi có thể mất thông tin nguồn gốc.",
+        "success": "mọi dự đoán đều có thể truy về một danh tính nguồn và ranh giới chống rò rỉ nằm trước mọi phép crop hoặc tăng cường dữ liệu"
+      },
+      {
+        "title": "Thiết kế bản kê khai chia tập",
+        "prompt": "Chỉ định schema JSON hoặc CSV cho các danh tính bất biến thuộc tập huấn luyện, xác thực và kiểm thử. Viết các kiểm tra tính rời nhau, trùng lặp và tỷ lệ nhãn mà không xem hiệu năng mô hình trên tập kiểm thử.",
+        "success": "các kiểm tra từ chối danh tính bị chồng lấn và bản kê khai đã lưu có checksum ổn định"
+      },
+      {
+        "title": "Viết model card trước khi huấn luyện",
+        "prompt": "Phác thảo mục đích, người dùng, trường hợp loại trừ, nguồn gốc dữ liệu, hợp đồng đầu vào/đầu ra, metric chính, kiểu thất bại dự kiến và bằng chứng còn thiếu để sử dụng lâm sàng.",
+        "success": "tài liệu không đưa ra khẳng định lâm sàng và xác định một kế hoạch đánh giá có thể kiểm chứng cho thí nghiệm giáo dục"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "Dataset và DataLoader" },
+      { "type": "PyTorch chính thức", "title": "Khả năng tái lập" },
+      { "type": "PyTorch chính thức", "title": "torch.load" },
+      { "type": "PyTorch chính thức", "title": "Lưu và tải mô hình" },
+      { "type": "Bộ dữ liệu gốc", "title": "Mô tả thử thách LUNA16" },
+      { "type": "Bộ dữ liệu gốc", "title": "Hợp đồng đánh giá và tọa độ của LUNA16" }
+    ]
+  },
+  "notebooks": []
+}

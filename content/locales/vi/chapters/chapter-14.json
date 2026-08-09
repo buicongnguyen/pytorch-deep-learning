@@ -1,0 +1,201 @@
+{
+  "chapter": {
+    "number": 14,
+    "title": "Cải thiện bài toán phân loại",
+    "summary": "Xử lý mất cân bằng lớp, tăng cường dữ liệu, precision, recall và F1 trong khi khảo sát cách lựa chọn dữ liệu ảnh hưởng đến hiệu năng."
+  },
+  "lesson": {
+    "chapter": 14,
+    "outcomes": [
+      "Tính số lượng trong ma trận nhầm lẫn, precision, recall và F1 từ điểm mô hình mà không che giấu lựa chọn ngưỡng.",
+      "So sánh loss có trọng số lớp và lấy mẫu có trọng số, đồng thời giải thích cách mỗi phương pháp thay đổi phân phối huấn luyện hiệu dụng.",
+      "Áp dụng tăng cường dữ liệu giữ nguyên nhãn và xác minh trực quan các phép biến đổi hình học cùng cường độ.",
+      "Chọn mô hình và ngưỡng bằng dữ liệu xác thực, giữ riêng tập kiểm thử và báo cáo các ablation có thể tái lập."
+    ],
+    "sections": [
+      {
+        "id": "imbalance-baseline",
+        "title": "Đo tỷ lệ lớp trước khi chọn biện pháp can thiệp",
+        "summary": "Độ chính xác cao có thể mô tả một mô hình chỉ dự đoán lớp âm phổ biến.",
+        "body": [
+          "Đếm ứng viên dương và âm theo từng tập và từng danh tính nguồn độc lập. Sau đó đánh giá checkpoint Chương 13 với quy tắc quyết định không thay đổi. Ghi số lượng trong ma trận nhầm lẫn dưới dạng số nguyên trước khi suy ra tỷ lệ, vì chúng cho thấy một phần trăm tưởng như tốt thực sự đại diện cho điều gì.",
+          "Giữ logit thô hoặc điểm lớp dương cùng nhãn và danh tính. Các điểm này hỗ trợ phân tích ngưỡng về sau; chỉ lưu dự đoán cứng sẽ làm mất thông tin và khuyến khích huấn luyện lại cho một vấn đề thực chất thuộc về chính sách quyết định."
+        ],
+        "code": { "title": "Suy ra số lượng trong ma trận nhầm lẫn một cách rõ ràng" },
+        "callouts": [
+          {
+            "title": "Báo cáo mẫu số",
+            "body": "Precision, recall và accuracy trả lời các câu hỏi khác nhau. Hãy đưa số lượng vào báo cáo và xác định cách xử lý trường hợp mẫu số bằng không."
+          }
+        ]
+      },
+      {
+        "id": "threshold-metrics",
+        "title": "Tách chất lượng xếp hạng khỏi ngưỡng vận hành",
+        "summary": "Mô hình phát ra điểm; ngưỡng chuyển chúng thành hành động với chi phí dương tính giả và âm tính giả khác nhau.",
+        "body": [
+          "Precision là TP/(TP+FP), recall là TP/(TP+FN), còn F1 là trung bình điều hòa của chúng. Tính các metric này trên một lưới ngưỡng xác thực và trực quan hóa sự đánh đổi. Chỉ dùng dữ liệu xác thực để chọn quy tắc, chẳng hạn F1 lớn nhất hoặc ràng buộc recall tối thiểu, và viết quy tắc đó trước khi đánh giá nhãn kiểm thử.",
+          "Chỉ dùng epsilon nhỏ để xác định hành vi số học, không phải để che giấu một tập dự đoán rỗng. Với mục tiêu ở cấp chuỗi ảnh, tổng hợp điểm ứng viên theo hợp đồng dự án đã định trước rồi mới tính metric cuối cùng."
+        ],
+        "code": { "title": "Tính metric nhị phân ổn định" }
+      },
+      {
+        "id": "weighted-objective",
+        "title": "Hiểu điều gì thay đổi khi gán trọng số lớp",
+        "summary": "Loss có trọng số lớp thay đổi mức phạt gắn với ví dụ nhưng giữ nguyên phân phối của loader.",
+        "body": [
+          "CrossEntropyLoss nhận một trọng số cho mỗi lớp. Tăng trọng số dương làm tăng đóng góp của lỗi dương vào loss batch và gradient. Chỉ tính trọng số từ phân vùng huấn luyện, ghi chúng cùng lượt chạy và so sánh với đường cơ sở không trọng số từ cùng trạng thái khởi tạo.",
+          "Trọng số không phải metric và không bảo đảm xác suất được hiệu chuẩn. Nó thay đổi mục tiêu tối ưu hóa, vì vậy hãy chọn lại ngưỡng triển khai trên điểm xác thực thay vì giả định 0.5 vẫn tối ưu."
+        ],
+        "code": { "title": "Gán trọng số rõ ràng cho các lớp huấn luyện" },
+        "callouts": [
+          {
+            "title": "Chỉ tính từ dữ liệu huấn luyện",
+            "body": "Tỷ lệ lớp trong tập xác thực và kiểm thử là dữ kiện đánh giá, không phải đầu vào cho mục tiêu huấn luyện."
+          }
+        ]
+      },
+      {
+        "id": "weighted-sampling",
+        "title": "Dùng lấy mẫu như một đòn bẩy thí nghiệm riêng biệt",
+        "summary": "WeightedRandomSampler thay đổi ví dụ nào xuất hiện và tần suất của chúng, thay vì thay đổi hệ số loss sau khi nạp.",
+        "body": [
+          "Gán trọng số lấy mẫu cho từng ví dụ huấn luyện, thường nghịch đảo với tần suất lớp, rồi rút một số mẫu có kiểm soát với phép hoàn lại. Ghi lại tỷ lệ lớp thu được mỗi epoch và nhớ rằng cùng một ví dụ hiếm có thể được gặp nhiều lần.",
+          "Không kết hợp lấy mẫu có trọng số và loss có trọng số theo thói quen. Tác động của chúng nhân nhau và có thể hiệu chỉnh quá mức. Hãy so sánh đường cơ sở, trọng số loss, lấy mẫu và kết hợp cả hai như bốn nghiệm thức rõ ràng trên cùng cách chia tập và quy tắc đánh giá."
+        ],
+        "code": { "title": "Tạo trọng số lấy mẫu cho từng ví dụ" }
+      },
+      {
+        "id": "augmentation-audit",
+        "title": "Tăng cường cấu trúc giải phẫu mà không thay đổi hợp đồng nhãn",
+        "summary": "Phép biến đổi ngẫu nhiên chỉ hữu ích khi hình học, nội suy và hành vi cường độ vẫn hợp lý.",
+        "body": [
+          "Áp dụng phép tịnh tiến nhỏ, xoay, lật chỉ khi định hướng cho phép, co giãn và nhiễu cường độ có kiểm soát cho mẫu huấn luyện. Với crop CT 3D, dùng các phép toán tensor đã kiểm thử để biến đổi nhất quán mọi nhãn đích liên quan. Không áp dụng độc lập phép biến đổi ảnh 2D cho từng lát nếu điều đó phá vỡ cấu trúc 3D.",
+          "TorchVision transforms v2 là API hiện hành được khuyến nghị cho ảnh thông thường và mask đi cặp, và Chương 15 dùng khả năng này cho phân đoạn 2D. Đường CT 3D của sách vẫn cần phép biến đổi chuyên biệt theo miền với nội suy và phần đệm rõ ràng. Lưu lưới các phép biến đổi lặp lại cho ứng viên dương và âm."
+        ],
+        "points": [
+          "Không bao giờ tăng cường ngẫu nhiên mẫu xác thực hoặc kiểm thử.",
+          "Dùng nội suy lân cận gần nhất cho mask rời rạc.",
+          "Biến đổi hình học ảnh và nhãn đích bằng cùng tham số ngẫu nhiên.",
+          "Đặt seed cho đường tăng cường dữ liệu để kiểm thử hồi quy."
+        ],
+        "callouts": [
+          {
+            "title": "Một ảnh hợp lý vẫn có thể mang nhãn sai",
+            "body": "Chỉ chất lượng trực quan là chưa đủ. Hãy xác minh ứng viên vẫn nằm trong crop và các phép biến đổi phụ thuộc định hướng được nhiệm vụ cho phép."
+          }
+        ]
+      },
+      {
+        "id": "ablation-and-selection",
+        "title": "Biến cải tiến thành các phép so sánh có kiểm soát",
+        "summary": "Ablation từng yếu tố và quy tắc đánh giá cố định cung cấp nhiều thông tin hơn một chồng thủ thuật không thể truy vết.",
+        "body": [
+          "Bắt đầu mọi nghiệm thức từ cùng checkpoint cơ sở hoặc trạng thái khởi tạo đã ghi, cách chia dữ liệu, số lần cập nhật optimizer và giao thức xác thực. Thay đổi một yếu tố chính, lặp với nhiều hơn một seed khi có thể và báo cáo cả metric chính lẫn số lượng trong ma trận nhầm lẫn.",
+          "Chọn checkpoint và ngưỡng trên dữ liệu xác thực. Chỉ đánh giá phân vùng kiểm thử được giữ riêng một lần cho phép so sánh cuối, rồi báo cáo ví dụ dương tính giả và âm tính giả cùng danh tính nguồn. Nếu kết quả kiểm thử thúc đẩy thay đổi thiết kế, đó là thí nghiệm mới và cần một tập kiểm thử nguyên vẹn khác hoặc phải công bố rõ trạng thái khám phá."
+        ],
+        "code": { "title": "Lưu quy tắc quyết định đã chọn" }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Mất cân bằng lớp",
+        "book": "Dự án cải thiện bộ phân loại ứng viên mất cân bằng bằng các lựa chọn lấy mẫu, loss và tăng cường dữ liệu.",
+        "current": "So sánh trọng số CrossEntropyLoss và WeightedRandomSampler như các biện pháp riêng biệt",
+        "reason": "Trọng số loss thay đổi đóng góp gradient; lấy mẫu thay đổi tần suất tiếp xúc. Kết hợp chúng mà không có ablation có thể hiệu chỉnh hai lần cùng một mất cân bằng."
+      },
+      {
+        "topic": "Phép biến đổi",
+        "book": "Tăng cường CT tùy chỉnh giữ nguyên hợp đồng crop 3D lấy tâm theo ứng viên.",
+        "current": "Dùng transforms v2 cho pipeline ảnh/mask 2D được hỗ trợ; giữ phép toán 3D đã kiểm thử cho CT",
+        "reason": "TorchVision khuyến nghị v2 và có thể biến đổi ảnh cùng mask, nhưng phép biến đổi 2D thông thường không thay thế hình học 3D chuyên biệt theo miền."
+      },
+      {
+        "topic": "Chọn mô hình",
+        "book": "F1 tóm tắt sự cân bằng giữa precision và recall cho metric dự án.",
+        "current": "Cố định cả checkpoint và ngưỡng từ dữ liệu xác thực",
+        "reason": "Một điểm chỉ trở thành quyết định lớp sau khi chọn ngưỡng. Chọn ngưỡng trên nhãn kiểm thử làm rò rỉ thông tin đánh giá."
+      }
+    ],
+    "notebookLinks": [
+      { "slug": "p2ch14_explore_data", "reason": "Xem lại ứng viên dương và âm, đồng thời liên hệ thống kê mất cân bằng với các ví dụ CT thực tế." },
+      { "slug": "p2ch14--sandbox", "reason": "Khảo sát tương tác metric, tập con, tăng cường dữ liệu và các đòn bẩy cải thiện của ứng dụng huấn luyện." },
+      { "slug": "p2ch14--1_final_metric_f1_score", "reason": "Vẽ và diễn giải hành vi precision, recall và F1 cho quy tắc quyết định cuối cùng." }
+    ],
+    "exercises": [
+      {
+        "title": "Chọn một ngưỡng xác thực",
+        "prompt": "Lưu điểm và nhãn xác thực một lần, quét ngưỡng mà không chạy lại mô hình, vẽ precision/recall/F1 và cố định bản ghi lựa chọn trước khi xem metric kiểm thử.",
+        "success": "ngưỡng được chọn tuân theo quy tắc đã viết và báo cáo cuối bao gồm số lượng cùng quyết định xác thực đã cố định"
+      },
+      {
+        "title": "Chạy ablation bốn nghiệm thức cho mất cân bằng",
+        "prompt": "So sánh đường cơ sở, loss có trọng số, sampler có trọng số và kết hợp cả hai bằng cùng khởi tạo, cách chia, số lần cập nhật và seed. Ghi tỷ lệ lớp thực tế được lấy mẫu.",
+        "success": "báo cáo phân biệt trọng số mục tiêu với trọng số tiếp xúc và không chọn nghiệm thức từ kết quả kiểm thử"
+      },
+      {
+        "title": "Kiểm toán tăng cường dữ liệu",
+        "prompt": "Tạo các góc nhìn biến đổi lặp lại cho ứng viên dương, âm, sát biên và nhỏ đại diện. Thêm bất biến cho shape đầu ra, giá trị hữu hạn, tính nhất quán nhãn đích và khả năng nhìn thấy ứng viên.",
+        "success": "kiểm tra trực quan và tự động xác định khoảng biến đổi được phép và từ chối ít nhất một phép biến đổi cố ý không hợp lệ"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "CrossEntropyLoss" },
+      { "type": "PyTorch chính thức", "title": "Các sampler của torch.utils.data" },
+      { "type": "PyTorch chính thức", "title": "TorchVision transforms v2" },
+      { "type": "PyTorch chính thức", "title": "Khả năng tái lập" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch14_explore_data",
+      "title": "P2ch14 Khám phá dữ liệu",
+      "summary": "So sánh mẫu ứng viên cân bằng và đã tăng cường trước khi huấn luyện.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "trực quan hóa"], "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu." },
+        { "number": 3, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2ch14 Khám phá dữ liệu. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 4, "concepts": ["nạp dữ liệu", "tiền xử lý", "khuếch tán"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình." },
+        { "number": 5, "concepts": ["hình dạng tensor", "tiền xử lý", "trực quan hóa"], "explanation": "Ô 5 chuyển đầu vào sang dạng sẵn sàng cho mô hình rồi trực quan hóa giá trị trung gian hoặc cuối. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." }
+      ]
+    },
+    {
+      "slug": "p2ch14--1_final_metric_f1_score",
+      "title": "Metric cuối cùng: điểm F1",
+      "summary": "Tính precision, recall và F1 phân loại từ các dự đoán đã lưu.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "đánh giá", "trực quan hóa"], "explanation": "Ô này định nghĩa `plotScore`, `plotScores`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["đánh giá"], "explanation": "Ô 2 đánh giá kết quả." },
+        { "number": 3, "concepts": ["đánh giá"], "explanation": "Ô 3 đánh giá kết quả." },
+        { "number": 4, "concepts": ["đánh giá"], "explanation": "Ô 4 đánh giá kết quả." },
+        { "number": 5, "concepts": ["đánh giá"], "explanation": "Ô 5 đánh giá kết quả." },
+        { "number": 6, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch14--sandbox",
+      "title": "Khu vực thử nghiệm",
+      "summary": "Không gian nháp của chương để thử các ý tưởng trung gian, hình dạng tensor và API bên ngoài mạch notebook chính.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["thí nghiệm Python"], "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 5, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["nhập thư viện", "đánh giá"], "explanation": "Ô 7 đánh giá kết quả." },
+        { "number": 8, "concepts": ["đánh giá"], "explanation": "Ô 8 đánh giá kết quả." },
+        { "number": 9, "concepts": ["thí nghiệm Python"], "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 10, "concepts": ["thí nghiệm Python"], "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 11, "concepts": ["thí nghiệm Python"], "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 12, "concepts": ["thí nghiệm Python"], "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 13, "concepts": ["nhập thư viện", "nạp dữ liệu", "đặt trên thiết bị"], "explanation": "Ô 13 nạp hoặc tổ chức dữ liệu. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 14, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 15, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 16, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,517 @@
+{
+  "chapter": {
+    "number": 6,
+    "title": "Mạng nơ-ron",
+    "summary": "Chuyển từ các hàm viết tay sang module tái sử dụng, hàm kích hoạt phi tuyến, tham số và các lớp mạng có thể kết hợp."
+  },
+  "lesson": {
+    "chapter": 6,
+    "outcomes": [
+      "Kết hợp các layer tuyến tính và hàm kích hoạt phi tuyến thành một mạng nơ-ron có thể huấn luyện.",
+      "Giải thích cách nn.Module đăng ký module con, tham số và buffer bền vững.",
+      "Chọn giữa Sequential và phương thức forward dựa trên phép tính thay vì phong cách trình bày.",
+      "Lưu, khôi phục, kiểm tra và tùy chọn biên dịch một module trong khi vẫn giữ eager làm đường cơ sở về tính đúng đắn."
+    ],
+    "sections": [
+      {
+        "id": "from-linear-to-network",
+        "title": "Biến một hàm đã khớp thành mạng",
+        "summary": "Mạng nơ-ron xen kẽ các phép biến đổi affine được học với những phép toán phi tuyến.",
+        "body": [
+          "Một layer nn.Linear tính phép biến đổi affine và sở hữu trọng số cùng bias tùy chọn dưới dạng tham số. Dù xếp chồng bao nhiêu layer tuyến tính, toàn bộ chuỗi vẫn rút gọn thành một phép biến đổi tuyến tính duy nhất. Các hàm kích hoạt phi tuyến giúp phép hợp biểu diễn được những quan hệ cong và từng đoạn.",
+          "Hãy luôn theo dõi hợp đồng đầu vào và đầu ra. Một batch gồm N mẫu, mỗi mẫu có F đặc trưng, mang hình dạng N × F; một layer hồi quy dự đoán một giá trị cho mỗi mẫu sẽ trả về N × 1."
+        ],
+        "code": {
+          "title": "Một mạng hồi quy nhỏ"
+        },
+        "points": [
+          "Độ rộng layer xác định số lượng đặc trưng, không phải kích thước batch.",
+          "Hình dạng của layer cuối phải phù hợp với mục tiêu và hàm mất mát.",
+          "Các tham số bắt đầu từ giá trị khởi tạo và được optimizer thay đổi.",
+          "Hàm kích hoạt làm thay đổi khả năng biểu diễn và dòng gradient."
+        ]
+      },
+      {
+        "id": "activation-behavior",
+        "title": "Nghiên cứu hàm kích hoạt qua đầu ra và gradient",
+        "summary": "Tanh, ReLU, GELU và SiLU có những đánh đổi khác nhau; không hàm nào luôn đúng cho mọi bài toán.",
+        "body": [
+          "Đường cong truyền xuôi của một hàm kích hoạt cho biết giá trị nào bị làm suy giảm hoặc được giữ lại. Đạo hàm của nó cho thấy nơi tham số nhận được tín hiệu học mạnh, yếu hoặc bằng không. Hiện tượng bão hòa, việc căn tâm đầu ra, độ trơn và chi phí tính toán đều có thể quan trọng.",
+          "Hãy so sánh các hàm kích hoạt với cùng seed, cách khởi tạo, thứ tự dữ liệu, optimizer và ngân sách tham số. Sự khác biệt ở hàm mất mát cuối chỉ có ý nghĩa khi phần còn lại của thí nghiệm được kiểm soát."
+        ],
+        "code": {
+          "title": "Kiểm tra gradient của hàm kích hoạt"
+        },
+        "callouts": [
+          {
+            "title": "Hàm kích hoạt là một lựa chọn thực nghiệm",
+            "body": "Giữ Tanh ở nơi nó làm rõ ví dụ trong sách, sau đó so sánh với những lựa chọn hiện đại thường gặp mà không khẳng định một hàm luôn thắng trong mọi tác vụ."
+          }
+        ]
+      },
+      {
+        "id": "sequential-composition",
+        "title": "Dùng Sequential cho một luồng xử lý thẳng",
+        "summary": "Sequential đặt tên và thực thi một chuỗi đơn giản, đồng thời đăng ký mọi module con.",
+        "body": [
+          "nn.Sequential phù hợp khi mỗi module nhận đầu ra duy nhất của module trước. Nó cho phép xây dựng ngắn gọn, cung cấp biểu diễn in ra hữu ích và đăng ký tham số theo cách thông thường. Các tên mô tả có thứ tự có thể làm khóa checkpoint và kết quả gỡ lỗi dễ đọc hơn.",
+          "Đừng ép nhánh rẽ, nhiều đầu vào, phép cộng residual hoặc hành vi có điều kiện vào Sequential. Những phép tính đó rõ ràng hơn trong một phương thức forward tùy chỉnh."
+        ],
+        "code": {
+          "title": "Đặt tên các giai đoạn của mô hình tuần tự"
+        }
+      },
+      {
+        "id": "module-subclass",
+        "title": "Kế thừa Module khi phép tính có cấu trúc",
+        "summary": "Gán trạng thái trong __init__, biểu diễn luồng dữ liệu trong forward và để __call__ quản lý hành vi của module.",
+        "body": [
+          "Một module tùy chỉnh phải gọi super().__init__() trước khi gán các module con. Module được lưu dưới dạng thuộc tính sẽ được đăng ký đệ quy, vì vậy tham số xuất hiện trong parameters(), đi theo các lần chuyển thiết bị và được đưa vào state_dict(). Tensor thô cần được học phải bọc bằng nn.Parameter; trạng thái không học có thể đăng ký dưới dạng buffer.",
+          "Hãy định nghĩa forward() nhưng gọi module bằng model(inputs). Gọi trực tiếp forward sẽ bỏ qua cơ chế bao quanh hook và lời gọi module. Phương thức forward có thể dùng Python thông thường và các phép toán tensor bình thường."
+        ],
+        "code": {
+          "title": "Một mô hình hồi quy tùy chỉnh theo kiểu residual"
+        },
+        "callouts": [
+          {
+            "title": "Danh sách thông thường không đăng ký module con",
+            "body": "Khi lưu một tập layer có số lượng thay đổi, hãy dùng nn.ModuleList hoặc một container module khác để optimizer và state dictionary vẫn nhìn thấy các tham số."
+          }
+        ]
+      },
+      {
+        "id": "module-state",
+        "title": "Kiểm tra và bảo toàn trạng thái module",
+        "summary": "State dictionary chứa tham số và buffer bền vững dưới các khóa phân cấp ổn định.",
+        "body": [
+          "Optimizer nhận model.parameters(), còn việc chẩn đoán thường được hỗ trợ tốt hơn bởi named_parameters(). State dictionary tạo ra một ranh giới linh hoạt để lưu trạng thái đã học mà không thường xuyên pickle toàn bộ đối tượng mô hình Python.",
+          "Hãy dựng đúng kiến trúc dự kiến trước khi nạp. Dùng weights_only=True khi giải tuần tự hóa và nạp nghiêm ngặt khi checkpoint được kỳ vọng khớp hoàn toàn. Bộ nạp hạn chế thu hẹp những gì có thể được tái tạo, nhưng vẫn tuyệt đối không nạp checkpoint từ nguồn không đáng tin. Khi theo dõi mô hình tốt nhất trong bộ nhớ, hãy sao chép trạng thái vì các giá trị state_dict() tham chiếu đến trạng thái tensor đang sống."
+        ],
+        "code": {
+          "title": "Lưu rồi nạp lại một state dictionary"
+        },
+        "callouts": [
+          {
+            "title": "Nạp hạn chế không phải là ranh giới tin cậy",
+            "body": "weights_only=True giới hạn các đối tượng mà unpickler có thể tái tạo, nhưng PyTorch vẫn cảnh báo không bao giờ nạp dữ liệu từ nguồn không đáng tin. Hãy lấy checkpoint từ nguồn tin cậy và xác minh tính toàn vẹn."
+          }
+        ]
+      },
+      {
+        "id": "outputs-and-compilation",
+        "title": "Giữ đầu ra tương thích và tối ưu hóa sau cùng",
+        "summary": "Hàm mất mát xác định yêu cầu đầu ra; biên dịch là thí nghiệm hiệu năng sau khi đã bảo đảm tính đúng đắn.",
+        "body": [
+          "Mô hình hồi quy có thể phát ra dự đoán dấu phẩy động không bị giới hạn cho MSELoss. Mô hình phân loại nhiều lớp dùng CrossEntropyLoss nên phát ra logits thô thay vì áp dụng Softmax hoặc LogSoftmax ở layer cuối. Chỉ chuyển logits thành xác suất trong bước đánh giá hoặc báo cáo.",
+          "PyTorch 2.13 có thể biên dịch callable hoặc module để tối ưu khối lượng công việc được hỗ trợ. Tính sẵn có của backend, phiên bản Python và chuỗi công cụ biên dịch khác nhau theo nền tảng. Hãy so sánh kết quả biên dịch với eager trên đầu vào đại diện, tính đến giai đoạn khởi động và đo trên thiết bị đích. Giữ eager để gỡ lỗi graph break và kiểm tra tính đúng đắn."
+        ],
+        "code": {
+          "title": "Kiểm tra trước khi biên dịch tùy chọn"
+        },
+        "callouts": [
+          {
+            "title": "Biên dịch không phải là thiết kế lại mô hình",
+            "body": "Biên dịch phải bảo toàn hợp đồng mô hình. Khẳng định về tốc độ cần phép đo đại diện; đầu ra bằng nhau không tự chứng minh có tăng tốc. Backend mặc định cũng có thể cần chuỗi công cụ biên dịch của nền tảng."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Cấu trúc module",
+        "book": "Chương này so sánh Sequential, tên có thứ tự và một nn.Module tùy chỉnh.",
+        "current": "Giữ phép so sánh và trình bày rõ các quy tắc đăng ký",
+        "reason": "Hành vi Module hiện tại vẫn xoay quanh module con, tham số và buffer đã đăng ký; hiểu quy tắc đăng ký giúp tránh trạng thái vô hình và tham số bị optimizer bỏ sót."
+      },
+      {
+        "topic": "Checkpoint",
+        "book": "Trạng thái tham số của mô hình được kiểm tra như một phần của quá trình học.",
+        "current": "Lưu state_dict() và giải tuần tự hóa với weights_only=True",
+        "reason": "State dictionary có thể kiểm tra và ít phụ thuộc vào việc pickle lớp Python hơn, miễn là kiến trúc được dựng lại và các khóa trạng thái vẫn khớp."
+      },
+      {
+        "topic": "Hiệu năng",
+        "book": "Thực thi Module theo eager là đường đi tiêu chuẩn.",
+        "current": "Cung cấp torch.compile như một phép đo tùy chọn đã được kiểm thử",
+        "reason": "PyTorch 2.13 có thể tối ưu một module được hỗ trợ, nhưng tính đúng đắn ở eager và phép đo trên phần cứng đích vẫn là điều kiện tiên quyết."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch6--1_neural_networks",
+        "reason": "Chuyển từ mô hình vô hướng đã khớp sang các layer Linear, phép hợp phi tuyến, kiểm tra tham số và huấn luyện."
+      },
+      {
+        "slug": "p1ch6--2_activation_functions",
+        "reason": "So sánh đường cong truyền xuôi và đạo hàm trong khi kiểm soát phần còn lại của thí nghiệm."
+      },
+      {
+        "slug": "p1ch6--3_nn_module_subclassing",
+        "reason": "Đối chiếu cách xây dựng Sequential và Module tùy chỉnh, sau đó xem lại việc đăng ký tham số và hành vi forward."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Chứng minh hai module tương đương",
+        "prompt": "Triển khai cùng một mạng feed-forward bằng Sequential và Module tùy chỉnh, sao chép trạng thái bằng cách ghép khóa rồi so sánh đầu ra trên nhiều batch ngẫu nhiên.",
+        "success": "torch.testing.assert_close đạt và mỗi tham số đều có phần tương ứng được ghi lại"
+      },
+      {
+        "title": "Thực hiện nghiên cứu hàm kích hoạt có kiểm soát",
+        "prompt": "Huấn luyện các mô hình cùng độ rộng với Tanh, ReLU, GELU và SiLU bằng cùng seed khởi tạo và thứ tự batch. Vẽ hàm mất mát và báo cáo chuẩn gradient.",
+        "success": "phép so sánh chỉ thay đổi hàm kích hoạt và giải thích ít nhất một khác biệt gradient quan sát được"
+      },
+      {
+        "title": "Xem lại ranh giới trạng thái",
+        "prompt": "Lưu state dictionary của mô hình, khôi phục trên CPU với weights_only=True, xác minh dự đoán giống hệt nhau, sau đó chủ động đổi độ rộng một layer và ghi lại lỗi nạp nghiêm ngặt.",
+        "success": "vòng lưu–nạp hợp lệ khớp nhau và kiến trúc không tương thích thất bại với thông tin dễ hiểu về khóa thiếu hoặc kích thước không khớp"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu tham khảo giảng dạy",
+        "title": "Học Deep Learning với PyTorch"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Module"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Ghi chú về module"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Xây dựng mạng nơ-ron"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Ngữ nghĩa tuần tự hóa"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.load"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.compile"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch6--1_neural_networks",
+      "title": "Mạng nơ-ron",
+      "summary": "Biểu diễn mô hình học bằng các layer PyTorch và so sánh những kiến trúc khác nhau.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 2 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 3 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nhập thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 5 xây dựng mô hình, sau đó truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 8 truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 9 truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "định nghĩa mô hình",
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 10 xây dựng mô hình, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "định nghĩa mô hình",
+            "hàm mất mát",
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô này định nghĩa `loss_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "định nghĩa mô hình",
+            "hàm mất mát",
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 15 xây dựng mô hình, sau đó đo sai số dự đoán, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "định nghĩa mô hình"
+          ],
+          "explanation": "Ô 16 xây dựng mô hình."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 17 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 18 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 19,
+          "concepts": [
+            "nhập thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 19 xây dựng mô hình, sau đó truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 20,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 20 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 21,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 21 truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 22,
+          "concepts": [
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 22 truyền dữ liệu qua mô hình, sau đó đo sai số dự đoán, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 23,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 23 truyền dữ liệu qua mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 24,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 24 xây dựng mô hình, sau đó truyền dữ liệu qua mô hình, sau đó đo sai số dự đoán. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 25,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch6--2_activation_functions",
+      "title": "Hàm kích hoạt",
+      "summary": "Trực quan hóa các hàm kích hoạt phi tuyến và gradient của chúng.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 3 truyền dữ liệu qua mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 4 truyền dữ liệu qua mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 5 truyền dữ liệu qua mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch6--3_nn_module_subclassing",
+      "title": "Kế thừa nn.Module",
+      "summary": "Tạo module tùy chỉnh và định nghĩa phép tính forward một cách tường minh.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "định nghĩa mô hình"
+          ],
+          "explanation": "Ô 2 xây dựng mô hình."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 3 xây dựng mô hình, sau đó truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `SubclassModel`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 5 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `SubclassFunctionalModel`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        }
+      ]
+    }
+  ]
+}

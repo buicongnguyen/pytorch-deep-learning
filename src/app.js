@@ -1,10 +1,16 @@
 const base = document.documentElement.dataset.base;
 const root = document.documentElement;
+const locale = root.dataset.locale || "en";
+const searchUrl = root.dataset.searchUrl || `${base}search.json`;
+const runtimeElement = document.querySelector("#runtime-i18n");
+const ui = runtimeElement ? JSON.parse(runtimeElement.textContent) : {};
+const formatMessage = (template, values = {}) => String(template || "").replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => values[key] ?? `{${key}}`);
+const normalizeSearch = (value) => String(value).normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase(locale).replaceAll("đ", "d");
 
 function applyTheme(theme) {
   root.dataset.theme = theme;
   localStorage.setItem("pytorch-atlas-theme", theme);
-  document.querySelector(".theme-toggle")?.setAttribute("aria-label", `Switch to ${theme === "dark" ? "light" : "dark"} theme`);
+  document.querySelector(".theme-toggle")?.setAttribute("aria-label", theme === "dark" ? ui.switchToLightTheme : ui.switchToDarkTheme);
 }
 
 applyTheme(localStorage.getItem("pytorch-atlas-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
@@ -24,21 +30,44 @@ let searchIndex;
 async function openSearch() {
   dialog.showModal();
   searchInput.focus();
-  if (!searchIndex) searchIndex = await fetch(`${base}search.json`).then((response) => response.json());
+  if (!searchIndex) {
+    try {
+      const response = await fetch(searchUrl);
+      if (!response.ok) throw new Error(String(response.status));
+      searchIndex = await response.json();
+    } catch {
+      const message = document.createElement("p");
+      message.className = "no-results";
+      message.textContent = ui.searchLoadError;
+      searchResults.replaceChildren(message);
+      return;
+    }
+  }
   renderSearch("");
 }
 
 function renderSearch(query) {
   if (!searchIndex) return;
-  const normalized = query.trim().toLowerCase();
-  const matches = searchIndex.filter((item) => !normalized || `${item.title} ${item.summary} ${item.type}`.toLowerCase().includes(normalized)).slice(0, 12);
+  const normalized = normalizeSearch(query.trim());
+  const matches = searchIndex.filter((item) => !normalized || normalizeSearch(`${item.title} ${item.summary} ${item.type}`).includes(normalized)).slice(0, 12);
   searchResults.replaceChildren(...matches.map((item) => {
     const link = document.createElement("a");
     link.href = item.url;
-    link.innerHTML = `<span>${item.type}</span><strong>${item.title}</strong><p>${item.summary}</p>`;
+    const type = document.createElement("span");
+    const title = document.createElement("strong");
+    const summary = document.createElement("p");
+    type.textContent = item.type;
+    title.textContent = item.title;
+    summary.textContent = item.summary;
+    link.append(type, title, summary);
     return link;
   }));
-  if (!matches.length) searchResults.innerHTML = "<p class='no-results'>No matching chapter or notebook.</p>";
+  if (!matches.length) {
+    const message = document.createElement("p");
+    message.className = "no-results";
+    message.textContent = ui.noSearchResults;
+    searchResults.replaceChildren(message);
+  }
 }
 
 document.querySelector(".search-trigger")?.addEventListener("click", openSearch);
@@ -52,9 +81,16 @@ document.querySelectorAll(".lesson-copy").forEach((button) => {
   button.addEventListener("click", async () => {
     const source = button.closest(".lesson-code")?.querySelector("code")?.textContent || "";
     await navigator.clipboard.writeText(source);
-    button.textContent = "Copied";
-    setTimeout(() => { button.textContent = "Copy code"; }, 1400);
+    button.textContent = ui.copied;
+    setTimeout(() => { button.textContent = ui.copyCode; }, 1400);
   });
+});
+
+document.querySelector(".language-switch")?.addEventListener("click", (event) => {
+  if (!location.hash) return;
+  const target = new URL(event.currentTarget.href);
+  target.hash = location.hash;
+  event.currentTarget.href = target.href;
 });
 
 const lessonToc = document.querySelector(".lesson-toc");
@@ -89,10 +125,10 @@ async function renderNotebook() {
   const meta = JSON.parse(metaElement.textContent);
   try {
     const response = await fetch(meta.sourceUrl);
-    if (!response.ok) throw new Error(`Source returned ${response.status}`);
+    if (!response.ok) throw new Error(formatMessage(ui.sourceReturned, { status: response.status }));
     const notebook = await response.json();
     const codeCells = notebook.cells.filter((cell) => cell.cell_type === "code");
-    if (codeCells.length !== meta.cells.length) throw new Error("The pinned notebook no longer matches the explanation catalog.");
+    if (codeCells.length !== meta.cells.length) throw new Error(ui.notebookMismatch);
     const toc = document.querySelector(".cell-toc nav");
     const fragments = codeCells.map((cell, index) => {
       const guide = meta.cells[index];
@@ -101,20 +137,20 @@ async function renderNotebook() {
       article.id = `cell-${guide.number}`;
       const header = element("header", "cell-header");
       const identity = element("div");
-      identity.append(element("span", "cell-index", `In [${guide.number}]`), element("strong", "cell-role", guide.concepts[0]));
-      const copy = element("button", "copy-button", "Copy code");
+      identity.append(element("span", "cell-index", formatMessage(ui.inputCell, { number: guide.number })), element("strong", "cell-role", guide.concepts[0]));
+      const copy = element("button", "copy-button", ui.copyCode);
       copy.type = "button";
       copy.addEventListener("click", async () => {
         await navigator.clipboard.writeText(source);
-        copy.textContent = "Copied";
-        setTimeout(() => { copy.textContent = "Copy code"; }, 1400);
+        copy.textContent = ui.copied;
+        setTimeout(() => { copy.textContent = ui.copyCode; }, 1400);
       });
       header.append(identity, copy);
       const pre = element("pre", "code-block");
-      const code = element("code", "language-python", source || "# Empty experiment cell");
+      const code = element("code", "language-python", source || ui.emptyExperimentCell);
       pre.append(code);
       const explanation = element("div", "cell-explanation");
-      const label = element("p", "explanation-label", "What this cell does");
+      const label = element("p", "explanation-label", ui.whatCellDoes);
       const prose = element("p", "explanation-text", guide.explanation);
       const tags = element("ul", "concept-tags");
       guide.concepts.forEach((concept) => tags.append(element("li", "", concept)));
@@ -135,7 +171,13 @@ async function renderNotebook() {
     }, { rootMargin: "-20% 0px -65%" });
     reader.querySelectorAll(".code-cell").forEach((cell) => observer.observe(cell));
   } catch (error) {
-    reader.innerHTML = `<div class="reader-error"><strong>Notebook code could not be loaded.</strong><p>${error.message}</p><a href="${meta.githubUrl}">Open the pinned source on GitHub ↗</a></div>`;
+    const wrapper = element("div", "reader-error");
+    const heading = element("strong", "", ui.notebookLoadError);
+    const message = element("p", "", error.message);
+    const source = element("a", "", ui.openPinnedSource);
+    source.href = meta.githubUrl;
+    wrapper.append(heading, message, source);
+    reader.replaceChildren(wrapper);
   }
 }
 

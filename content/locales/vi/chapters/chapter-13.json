@@ -1,0 +1,222 @@
+{
+  "chapter": {
+    "number": 13,
+    "title": "Huấn luyện bộ phân loại nốt phổi",
+    "summary": "Xây dựng bộ phân loại tích chập 3D, tổ chức tập huấn luyện/xác thực, chạy vòng lặp tối ưu hóa và ghi lại metric."
+  },
+  "lesson": {
+    "chapter": 13,
+    "outcomes": [
+      "Theo dõi một batch ứng viên 3D đi qua bộ phân loại tích chập và giải thích mọi chiều tensor.",
+      "Triển khai vòng lặp huấn luyện và xác thực sử dụng đúng logit, gradient, chế độ và metric tổng hợp.",
+      "Dùng kiểm thử overfit trên tập con rất nhỏ để phân biệt lỗi mô hình với vấn đề khái quát hóa.",
+      "Huấn luyện bằng API AMP hiện hành, lưu checkpoint state_dict có thể khởi động lại và chỉ đánh giá torch.compile sau khi đã xác nhận tương đương với eager."
+    ],
+    "sections": [
+      {
+        "id": "classifier-contract",
+        "title": "Bắt đầu từ hợp đồng batch-sang-logit",
+        "summary": "Bộ phân loại dễ gỡ lỗi hơn khi ý nghĩa của từng trục và đầu ra được cố định trước các lựa chọn kiến trúc.",
+        "body": [
+          "Phép tích chập 3D mong đợi tensor ứng viên có shape [batch, channel, depth, height, width]. Bộ phân loại nhị phân có thể trả về hai logit cho mỗi ứng viên hoặc một logit cho mục tiêu BCE; hãy chọn một cách biểu diễn và giữ nhãn cùng metric nhất quán với nó. Pipeline trong sách dùng metadata ứng viên để phân tích, nhưng chỉ tensor ảnh đi vào mạng.",
+          "Chạy một batch qua mô hình trước khi tạo optimizer. Khẳng định đầu vào và logit hữu hạn, khoảng nhãn, shape đầu ra và loss vô hướng. Hợp đồng một batch này định vị phần lớn lỗi dtype, kênh và kích thước flatten."
+        ],
+        "points": [
+          "Đầu vào ảnh là số dấu phẩy động; nhãn chỉ số lớp cho cross-entropy là torch.long.",
+          "CrossEntropyLoss nhận logit chưa chuẩn hóa có shape [B, classes].",
+          "UID chuỗi và tâm được giữ cạnh dự đoán để phân tích lỗi sau này.",
+          "Mô hình và đầu vào phải cùng device và có dtype tương thích."
+        ],
+        "code": { "title": "Khẳng định một batch trước khi huấn luyện" }
+      },
+      {
+        "id": "three-dimensional-model",
+        "title": "Đọc CNN 3D như một chuỗi biến đổi shape",
+        "summary": "Số kênh tăng trong khi các chiều không gian co lại, để lại biểu diễn gọn cho phân loại.",
+        "body": [
+          "Một block điển hình áp dụng Conv3d, chuẩn hóa, hàm kích hoạt và pooling. Ghi lại [C, D, H, W] sau mỗi block thay vì ghi nhớ kích thước đầu vào cuối cùng của Linear. Adaptive pooling có thể giúp head ít phụ thuộc hơn khi hợp đồng dự án cho phép chủ ý thay đổi kích thước đầu vào.",
+          "BatchNorm3d dùng thống kê batch trong huấn luyện và thống kê chạy đã lưu trong đánh giá, còn dropout ngừng hoạt động khi đánh giá. GroupNorm và LayerNorm không giữ thống kê chạy kiểu BatchNorm. model.train() và model.eval() chọn hành vi mô-đun nhưng không điều khiển autograd, vì vậy xác thực cũng cần no_grad hoặc inference_mode."
+        ],
+        "code": { "title": "Một head không phụ thuộc chính xác vào phạm vi crop" },
+        "callouts": [
+          {
+            "title": "Adaptive pooling là một quyết định hợp đồng",
+            "body": "Nó loại bỏ lớp Linear phụ thuộc shape, nhưng không có nghĩa hình học crop tùy ý là hợp lệ về ngữ nghĩa. Tiền xử lý vẫn phải khớp với huấn luyện."
+          }
+        ]
+      },
+      {
+        "id": "training-step",
+        "title": "Làm rõ từng bước tối ưu hóa",
+        "summary": "Xóa gradient, dự đoán, đo lỗi, lan truyền ngược và cập nhật theo một thứ tự nhất quán.",
+        "body": [
+          "Đặt mô hình ở chế độ huấn luyện một lần cho mỗi pha huấn luyện. Chuyển từng batch, xóa gradient cũ, tính logit và loss, chạy backward rồi gọi optimizer.step. Cộng dồn tổng loss đã detach thay vì tensor còn nối với đồ thị, nếu không metric của một epoch có thể giữ lại mọi đồ thị tính toán. Việc chuyển từng loss CUDA bằng item() cũng đồng bộ mỗi batch, nên vòng lặp nhạy với thông lượng có thể giữ một tổng đã detach trên device và chỉ chuyển đổi một lần trong mỗi khoảng báo cáo.",
+          "Dùng chế độ xác thực với model.eval() và torch.inference_mode(), nhưng tính cùng ngữ nghĩa loss và dự đoán. Tổng hợp tử số và mẫu số trên toàn bộ Dataset; lấy trung bình tỷ lệ phần trăm theo batch khiến batch nhỏ cuối cùng có trọng số quá lớn."
+        ],
+        "code": { "title": "Một bước huấn luyện eager tối thiểu" },
+        "callouts": [
+          {
+            "title": "Không dùng softmax trước cross-entropy",
+            "body": "CrossEntropyLoss kết hợp log-softmax và negative log likelihood. Hãy cung cấp logit thô; chỉ suy ra xác suất để báo cáo."
+          }
+        ]
+      },
+      {
+        "id": "overfit-debugging",
+        "title": "Chứng minh hệ thống có thể ghi nhớ một tập con rất nhỏ",
+        "summary": "Kiểm thử overfit trên batch nhỏ là phép kiểm thử tích hợp có giá trị cao cho dữ liệu, nhãn, mô hình, loss và cập nhật.",
+        "body": [
+          "Cố định một nhóm nhỏ ứng viên chứa cả hai lớp và huấn luyện lặp lại chính xác trên các tensor đó khi đã tắt tăng cường dữ liệu. Mô hình đủ năng lực phải đưa loss huấn luyện xuống rất thấp. Nếu không, hãy kiểm tra căn chỉnh nhãn đích, learning rate, chuẩn gradient, chế độ train/eval và liệu tham số có thay đổi sau optimizer.step hay không.",
+          "Kiểm thử này không đo khả năng khái quát hóa và không được báo cáo như chất lượng mô hình. Mục đích là thay một lỗi mơ hồ của lượt chạy đầy đủ bằng trường hợp nhỏ, xác định, có thể kiểm tra từng lớp."
+        ],
+        "points": [
+          "Dùng danh tính cố định và không có tăng cường ngẫu nhiên.",
+          "Ghi loss ban đầu, cuối cùng và xác suất dự đoán.",
+          "Kiểm tra ít nhất một tham số trước và sau một lần cập nhật.",
+          "Giữ kiểm thử này như một kiểm tra hồi quy nhanh."
+        ]
+      },
+      {
+        "id": "amp-and-throughput",
+        "title": "Thêm độ chính xác hỗn hợp sau khi vòng lặp FP32 đã đúng",
+        "summary": "AMP có thể giảm thời gian chạy và bộ nhớ, nhưng nó thay đổi phép tính số và cần so sánh hội tụ.",
+        "body": [
+          "Trên CUDA, vào torch.autocast quanh forward pass và loss, sau đó dùng torch.amp.GradScaler cho gradient float16. Backward chạy bên ngoài ngữ cảnh autocast. Nếu cần cắt gradient, hãy unscale optimizer trước khi cắt.",
+          "Đo số ví dụ mỗi giây và bộ nhớ đỉnh sau khởi động, nhưng cũng so sánh loss và metric xác thực với FP32. Mô hình 3D nhỏ hoặc pipeline đầu vào có thể bị giới hạn bởi CPU, vì vậy độ chính xác thấp hơn không bảo đảm tăng tốc toàn bộ lượt chạy."
+        ],
+        "code": { "title": "Mẫu AMP float16 hiện hành" }
+      },
+      {
+        "id": "checkpoint-and-compile",
+        "title": "Làm cho lượt chạy có thể khởi động lại trước khi làm nó nhanh hơn",
+        "summary": "Checkpoint đáng tin cậy khôi phục trạng thái huấn luyện, còn phép biên dịch được xác minh với mô hình eager trên đầu vào đại diện.",
+        "body": [
+          "Lưu một dictionary chứa state_dict của mô hình, optimizer, scheduler và GradScaler, cùng epoch, quyết định xác thực tốt nhất, phiên bản chia tập và trạng thái bộ sinh ngẫu nhiên cần cho batch kế tiếp. Giữ các đối tượng cấu hình tùy ý trong JSON bên cạnh; checkpoint weights_only=True nên chứa tensor, giá trị nguyên thủy và container thuần. Chỉ tải tệp đáng tin cậy, dùng map_location, rồi tạo lại mô hình và optimizer bằng mã trước khi nạp trạng thái.",
+          "Sau khi kiểm thử eager đạt, hãy tạo mô hình đã biên dịch và so sánh logit eager với compiled trong chế độ đánh giá. Khởi động đường compiled trước khi đo thời gian và theo dõi graph break hoặc tái biên dịch. Bài học này chỉ biên dịch đánh giá; PyTorch 2.13 tài liệu hóa thêm ngữ nghĩa backward-autocast cho huấn luyện AMP đã biên dịch. Biên dịch là tối ưu hóa cùng một thí nghiệm, không phải bằng chứng thí nghiệm đúng."
+        ],
+        "code": { "title": "Tải checkpoint state-dictionary đáng tin cậy" },
+        "callouts": [
+          {
+            "title": "Không bao giờ tải checkpoint không đáng tin cậy",
+            "body": "weights_only thu hẹp kiểu đối tượng được chấp nhận nhưng không phải lý do để xem tệp mô hình không rõ nguồn gốc là an toàn. Hãy xác minh nguồn gốc và tính toàn vẹn trước khi tải."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Độ chính xác hỗn hợp",
+        "book": "Vòng lặp huấn luyện cơ sở dễ đọc dùng phép tính dấu phẩy động thông thường.",
+        "current": "Dùng torch.autocast và torch.amp.GradScaler",
+        "reason": "Đây là các điểm vào AMP theo device hiện hành trong PyTorch 2.13; các alias torch.cuda.amp đã lỗi thời. Hành vi FP32 đúng vẫn là đường cơ sở."
+      },
+      {
+        "topic": "Tải checkpoint",
+        "book": "Dự án lưu tiến độ mô hình để tiếp tục huấn luyện và đánh giá về sau.",
+        "current": "Lưu state_dict và tải dictionary đáng tin cậy bằng weights_only=True",
+        "reason": "Cách này tránh phụ thuộc vào lớp mô hình đã pickle, hỗ trợ tái dựng rõ ràng và giảm các kiểu đối tượng được chấp nhận khi deserialize."
+      },
+      {
+        "topic": "Biên dịch",
+        "book": "Ứng dụng huấn luyện chạy mô hình theo eager để rõ ràng.",
+        "current": "Chỉ áp dụng torch.compile sau các kiểm thử đầu ra và gradient eager",
+        "reason": "Biên dịch có thể cải thiện hiệu năng nhưng đưa thêm guard, graph break, chi phí lần gọi đầu và khả năng tái biên dịch cần được đo riêng."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p2ch13--sandbox",
+        "reason": "Khảo sát LunaTrainingApp, một batch huấn luyện thật, phép tính loss, gradient, hành vi optimizer và thời gian nạp dữ liệu."
+      },
+      {
+        "slug": "p2_run_everything",
+        "reason": "Chạy pipeline chẩn đoán hình ảnh y khoa theo trình tự sau khi đã kiểm tra từng hợp đồng dữ liệu và huấn luyện."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Overfit mười sáu ứng viên",
+        "prompt": "Cố định một tập con cân bằng, tắt tăng cường dữ liệu và huấn luyện đến khi loss gần bằng không. Ghi xác suất, chuẩn gradient và độ thay đổi một tham số; chẩn đoán hệ thống nếu nó không thể ghi nhớ.",
+        "success": "tập con cố định được ghi nhớ và báo cáo cho thấy nhãn, gradient cùng tham số đều tham gia vào học"
+      },
+      {
+        "title": "So sánh FP32 và AMP",
+        "prompt": "Từ cùng trạng thái ban đầu, chạy các thử nghiệm FP32 và AMP tương ứng. Báo cáo đường loss, số ví dụ mỗi giây, bộ nhớ đỉnh và dự đoán xác thực trên ví dụ cố định.",
+        "success": "phép so sánh bao gồm khởi động, thứ tự dữ liệu giống nhau, API AMP hiện hành và một sai số số học hoặc kết luận chất lượng rõ ràng"
+      },
+      {
+        "title": "Xác minh hành vi tiếp tục có kiểm soát",
+        "prompt": "Trong một môi trường PyTorch/device đã tài liệu hóa, hãy lưu sau một bước optimizer và bao gồm mô hình, optimizer, scheduler, scaler, RNG CPU và accelerator đang dùng, RNG Python/NumPy khi có, cùng bộ sinh DataLoader hoặc danh tính batch kế tiếp. Dựng lại và khôi phục mọi đối tượng, đưa vào cùng batch kế tiếp rồi so sánh với lượt chạy đối chứng không gián đoạn.",
+        "success": "cùng batch kế tiếp được xác minh và tham số mô hình cùng kết quả bước tiếp theo phụ thuộc optimizer khớp đối chứng trong sai số hợp lý; mọi hạn chế kernel không xác định được báo cáo"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "Tối ưu hóa tham số mô hình" },
+      { "type": "PyTorch chính thức", "title": "Độ chính xác hỗn hợp tự động" },
+      { "type": "PyTorch chính thức", "title": "torch.load" },
+      { "type": "PyTorch chính thức", "title": "Khả năng tái lập" },
+      { "type": "PyTorch chính thức", "title": "torch.compile" },
+      { "type": "PyTorch chính thức", "title": "Lưu và tải mô hình" },
+      { "type": "PyTorch chính thức", "title": "TensorBoard với PyTorch" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2_run_everything",
+      "title": "P2 Chạy toàn bộ",
+      "summary": "Điều phối pipeline chẩn đoán hình ảnh y khoa qua các bước tiền xử lý, huấn luyện và đánh giá.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2 Chạy toàn bộ. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["trừu tượng Python"], "explanation": "Ô này định nghĩa `run`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 3, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2 Chạy toàn bộ. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 4, "concepts": ["thí nghiệm Python"], "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["thí nghiệm Python"], "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 10, "concepts": ["thí nghiệm Python"], "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 11, "concepts": ["thí nghiệm Python"], "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 12, "concepts": ["thí nghiệm Python"], "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 13, "concepts": ["thí nghiệm Python"], "explanation": "Ô 13 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 14, "concepts": ["thí nghiệm Python"], "explanation": "Ô 14 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 15, "concepts": ["khuếch tán"], "explanation": "Ô 15 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 16, "concepts": ["thí nghiệm Python"], "explanation": "Ô 16 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 17, "concepts": ["thí nghiệm Python"], "explanation": "Ô 17 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 18, "concepts": ["thí nghiệm Python"], "explanation": "Ô 18 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 19, "concepts": ["thí nghiệm Python"], "explanation": "Ô 19 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 20, "concepts": ["thí nghiệm Python"], "explanation": "Ô 20 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 21, "concepts": ["thí nghiệm Python"], "explanation": "Ô 21 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 22, "concepts": ["nạp dữ liệu"], "explanation": "Ô 22 nạp hoặc tổ chức dữ liệu." },
+        { "number": 23, "concepts": ["nạp dữ liệu"], "explanation": "Ô 23 nạp hoặc tổ chức dữ liệu." },
+        { "number": 24, "concepts": ["thí nghiệm Python"], "explanation": "Ô 24 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 25, "concepts": ["thí nghiệm Python"], "explanation": "Ô 25 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 26, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." },
+        { "number": 27, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch13--sandbox",
+      "title": "Khu vực thử nghiệm",
+      "summary": "Không gian nháp của chương để thử các ý tưởng trung gian, hình dạng tensor và API bên ngoài mạch notebook chính.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 3, "concepts": ["hình dạng tensor"], "explanation": "Ô 3 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 4, "concepts": ["nhập thư viện", "lan truyền thuận"], "explanation": "Ô 4 đưa dữ liệu qua mô hình." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["nhập thư viện", "hàm mất mát"], "explanation": "Ô 6 đo sai số dự đoán." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["thí nghiệm Python"], "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 10, "concepts": ["thí nghiệm Python"], "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 11, "concepts": ["thí nghiệm Python"], "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 12, "concepts": ["nhập thư viện", "hàm mất mát", "tối ưu hóa", "vi phân tự động"], "explanation": "Ô 12 đo sai số dự đoán rồi cập nhật các tham số đã học." },
+        { "number": 13, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." },
+        { "number": 14, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." },
+        { "number": 15, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." }
+      ]
+    }
+  ]
+}

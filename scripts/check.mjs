@@ -1,5 +1,6 @@
 import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { loadChapterOverlays, loadUi } from "./lib/i18n.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const dist = path.join(root, "dist");
@@ -7,24 +8,101 @@ const catalog = JSON.parse(await readFile(path.join(root, "content", "catalog.js
 const course = JSON.parse(await readFile(path.join(root, "content", "course.json"), "utf8"));
 const lessonFiles = (await readdir(path.join(root, "content", "lessons"))).filter((file) => file.endsWith(".json")).sort();
 const lessons = await Promise.all(lessonFiles.map(async (file) => JSON.parse(await readFile(path.join(root, "content", "lessons", file), "utf8"))));
+const viOverlays = await loadChapterOverlays(root, "vi");
+const enUi = await loadUi(root, "en");
+const viUi = await loadUi(root, "vi");
+const viTerminology = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "terminology.json"), "utf8"));
+const sourceOnly = process.argv.includes("--source-only");
 const failures = [];
-const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810 };
+const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810, locales: 2 };
 const actual = {
   chapters: catalog.chapters.length,
   reviewedLessons: lessons.length,
   notebooks: catalog.notebooks.length,
-  codeCells: catalog.notebooks.reduce((sum, notebook) => sum + notebook.codeCellCount, 0)
+  codeCells: catalog.notebooks.reduce((sum, notebook) => sum + notebook.codeCellCount, 0),
+  locales: course.locales?.length || 0
 };
+const siteBase = "/pytorch-deep-learning/";
+const siteOrigin = "https://buicongnguyen.github.io";
+const localePrefix = (locale) => course.locales?.find((item) => item.code === locale)?.pathPrefix ?? `${locale}/`;
+const localizedRoute = (locale, logicalPath = "") => `${siteBase}${localePrefix(locale)}${logicalPath}`;
+const localizedUrl = (locale, logicalPath = "") => new URL(localizedRoute(locale, logicalPath), siteOrigin).href;
 for (const [key, value] of Object.entries(expected)) if (actual[key] !== value) failures.push(`Expected ${value} ${key}, found ${actual[key]}`);
+
+const sameSet = (left, right) => JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+const isText = (value) => typeof value === "string" && value.trim() && !/TODO|�/.test(value);
+const placeholders = (value) => [...String(value).matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map((match) => match[1]).sort();
+const preservedTokens = (value) => [...String(value).matchAll(/`[^`]+`|\b\d+(?:\.\d+)*\b|\b(?:torch|torchvision|nn|F|dist|model|optimizer|scaler|scheduler)\.[A-Za-z_][\w.]*(?:\(\))?|\b[A-Z][A-Za-z0-9_]*(?:Loss|Dataset|Loader|Program|Inductor|Mesh|DDP|FSDP2?)\b/g)].map((match) => match[0].replace(/[.,;:]+$/, "")).sort();
+function requireText(value, label) {
+  if (!isText(value)) failures.push(`${label}: missing or invalid Vietnamese text`);
+}
+function requireArrayParity(source, translated, label) {
+  if (!Array.isArray(translated) || translated.length !== source.length) failures.push(`${label}: expected ${source.length} entries, found ${translated?.length ?? "none"}`);
+}
+function requireTranslation(source, translated, label) {
+  requireText(translated, label);
+  if (String(source).trim() === String(translated).trim() && String(source).trim().split(/\s+/).length >= 4) failures.push(`${label}: appears to be unlocalized English fallback`);
+  const remaining = [...preservedTokens(translated)];
+  const missing = preservedTokens(source).filter((token) => {
+    const index = remaining.indexOf(token);
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+    return false;
+  });
+  if (missing.length) failures.push(`${label}: required identifiers or numeric tokens changed during translation (${missing.join(", ")})`);
+}
+function rejectInvariantCopies(value, label) {
+  const forbidden = new Set(["source", "language", "url", "path", "sourceUrl", "githubUrl", "colabUrl", "status", "kind", "pytorchVersion", "reviewedAt", "minutes"]);
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    if (forbidden.has(key)) failures.push(`${label}: localized overlay must not duplicate invariant field ${key}`);
+    rejectInvariantCopies(child, `${label}.${key}`);
+  }
+}
+function validateLocalizedHead(html, locale, logicalPath, label) {
+  const expectations = [
+    `<html lang="${locale}"`,
+    `<link rel="canonical" href="${localizedUrl(locale, logicalPath)}">`,
+    `<link rel="alternate" hreflang="en" href="${localizedUrl("en", logicalPath)}">`,
+    `<link rel="alternate" hreflang="vi" href="${localizedUrl("vi", logicalPath)}">`,
+    `<link rel="alternate" hreflang="x-default" href="${localizedUrl("en", logicalPath)}">`
+  ];
+  for (const expectation of expectations) if (!html.includes(expectation)) failures.push(`${label}: missing exact head markup ${expectation}`);
+}
+
 for (const notebook of catalog.notebooks) {
   if (notebook.cells.length !== notebook.codeCellCount) failures.push(`${notebook.path}: explanation count does not match code-cell count`);
   if (!notebook.sourceUrl.includes(catalog.upstream.commit)) failures.push(`${notebook.path}: source is not pinned to the audited commit`);
+  for (const [field, allowedHosts] of Object.entries({ sourceUrl: ["raw.githubusercontent.com"], githubUrl: ["github.com"], colabUrl: ["colab.research.google.com"] })) {
+    try {
+      const url = new URL(notebook[field]);
+      if (url.protocol !== "https:" || !allowedHosts.includes(url.hostname)) failures.push(`${notebook.path}: ${field} must use HTTPS on ${allowedHosts.join(", ")}`);
+    } catch { failures.push(`${notebook.path}: invalid ${field}`); }
+  }
 }
 const lessonChapters = lessons.map((lesson) => lesson.chapter).sort((a, b) => a - b);
 if (JSON.stringify(lessonChapters) !== JSON.stringify(course.reviewedChapters)) failures.push("course.reviewedChapters must exactly match the lesson files");
 if (new Set(lessonChapters).size !== lessonChapters.length) failures.push("Each chapter may have only one lesson file");
 if (JSON.stringify(lessonChapters) !== JSON.stringify(Array.from({ length: lessons.length }, (_, index) => index + 1))) failures.push("Reviewed lessons must form the contiguous chapter prefix 1..N");
 if (course.upstreamCommit !== catalog.upstream.commit) failures.push("Course and notebook catalog must pin the same upstream commit");
+if (course.defaultLocale !== "en" || !sameSet(course.locales?.map((item) => item.code) || [], ["en", "vi"])) failures.push("Course locales must define English as default plus Vietnamese");
+if (course.locales?.some((item) => typeof item.pathPrefix !== "string" || (item.pathPrefix && !/^[a-z]{2}\/$/.test(item.pathPrefix)))) failures.push("Locale pathPrefix values must be empty or a two-letter path ending in /");
+if (new Set(course.locales?.map((item) => item.pathPrefix)).size !== course.locales?.length) failures.push("Locale pathPrefix values must be unique");
+for (const locale of ["en", "vi"]) if (!sameSet(course.reviewedLocales?.[locale] || [], lessonChapters)) failures.push(`reviewedLocales.${locale} must cover Chapters 1–17`);
+if (!sameSet(Object.keys(enUi), Object.keys(viUi))) failures.push("English and Vietnamese UI dictionaries must have identical keys");
+const uiConsumers = `${await readFile(path.join(root, "scripts", "build.mjs"), "utf8")}\n${await readFile(path.join(root, "src", "app.js"), "utf8")}`;
+const requiredUiKeys = new Set([...uiConsumers.matchAll(/\bui\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((match) => match[1]));
+for (const key of requiredUiKeys) if (!(key in enUi) || !(key in viUi)) failures.push(`Missing required localized UI key ${key}`);
+for (const [key, value] of Object.entries(enUi)) requireText(value, `English UI ${key}`);
+for (const [key, value] of Object.entries(viUi)) requireText(value, `Vietnamese UI ${key}`);
+for (const key of Object.keys(enUi)) if (JSON.stringify(placeholders(enUi[key])) !== JSON.stringify(placeholders(viUi[key]))) failures.push(`UI placeholder mismatch for ${key}`);
+const canonicalConcepts = new Set(catalog.notebooks.flatMap((notebook) => notebook.cells.flatMap((cell) => cell.concepts)));
+const canonicalReferenceTypes = new Set(lessons.flatMap((lesson) => lesson.references.map((reference) => reference.type)));
+if (!sameSet(canonicalConcepts, Object.keys(viTerminology.concepts || {}))) failures.push("Vietnamese terminology must cover the 24 canonical notebook concepts exactly");
+if (!sameSet(canonicalReferenceTypes, Object.keys(viTerminology.referenceTypes || {}))) failures.push("Vietnamese terminology must cover the canonical reference types exactly");
+for (const [key, value] of Object.entries(viTerminology.concepts || {})) requireText(value, `Vietnamese concept ${key}`);
+for (const [key, value] of Object.entries(viTerminology.referenceTypes || {})) requireText(value, `Vietnamese reference type ${key}`);
+
 const reservedSectionIds = new Set(["learning-outcomes", "version-review", "guided-notebooks", "exercises", "references"]);
 for (const lesson of lessons) {
   const prefix = `Chapter ${lesson.chapter}`;
@@ -66,27 +144,173 @@ for (const lesson of lessons) {
     if (mapping.status === "historical" && !mapping.runtime) failures.push(`${prefix}: historical notebook ${mapping.slug} needs a runtime note`);
   }
 }
-for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", "audit.json", "assets/styles.css", "assets/app.js"]) {
+
+if (viOverlays.length !== 17) failures.push(`Expected 17 Vietnamese chapter overlays, found ${viOverlays.length}`);
+const overlayChapters = viOverlays.map((overlay) => overlay.chapter?.number).sort((a, b) => a - b);
+if (JSON.stringify(overlayChapters) !== JSON.stringify(lessonChapters)) failures.push("Vietnamese overlays must cover Chapters 1–17 exactly");
+let localizedCells = 0;
+for (const overlay of viOverlays) {
+  const chapterNumber = overlay.chapter?.number;
+  const chapter = catalog.chapters.find((item) => item.number === chapterNumber);
+  const lesson = lessons.find((item) => item.chapter === chapterNumber);
+  const label = `Vietnamese Chapter ${chapterNumber}`;
+  rejectInvariantCopies(overlay, label);
+  if (!chapter || !lesson) { failures.push(`${label}: unknown chapter`); continue; }
+  requireTranslation(chapter.title, overlay.chapter.title, `${label} title`);
+  requireTranslation(chapter.summary, overlay.chapter.summary, `${label} summary`);
+  if (overlay.lesson?.chapter !== chapterNumber) failures.push(`${label}: lesson chapter number mismatch`);
+  requireArrayParity(lesson.outcomes, overlay.lesson?.outcomes, `${label} outcomes`);
+  for (const [index, outcome] of (overlay.lesson?.outcomes || []).entries()) requireTranslation(lesson.outcomes[index], outcome, `${label} outcome ${index + 1}`);
+  requireArrayParity(lesson.sections, overlay.lesson?.sections, `${label} sections`);
+  if (JSON.stringify(lesson.sections.map((section) => section.id)) !== JSON.stringify((overlay.lesson?.sections || []).map((section) => section.id))) failures.push(`${label}: section order differs from English`);
+  for (const sourceSection of lesson.sections) {
+    const translated = overlay.lesson?.sections?.find((section) => section.id === sourceSection.id);
+    if (!translated) { failures.push(`${label}: missing section ${sourceSection.id}`); continue; }
+    requireTranslation(sourceSection.title, translated.title, `${label} ${sourceSection.id} title`);
+    requireTranslation(sourceSection.summary, translated.summary, `${label} ${sourceSection.id} summary`);
+    requireArrayParity(sourceSection.body, translated.body, `${label} ${sourceSection.id} body`);
+    requireArrayParity(sourceSection.points || [], translated.points || [], `${label} ${sourceSection.id} points`);
+    requireArrayParity(sourceSection.callouts || [], translated.callouts || [], `${label} ${sourceSection.id} callouts`);
+    for (const [index, text] of (translated.body || []).entries()) requireTranslation(sourceSection.body[index], text, `${label} ${sourceSection.id} body ${index + 1}`);
+    for (const [index, text] of (translated.points || []).entries()) requireTranslation(sourceSection.points[index], text, `${label} ${sourceSection.id} point ${index + 1}`);
+    if (sourceSection.code) {
+      if (!translated.code || !sameSet(Object.keys(translated.code), ["title"])) failures.push(`${label} ${sourceSection.id}: code overlay must contain title only`);
+      requireTranslation(sourceSection.code.title, translated.code?.title, `${label} ${sourceSection.id} code title`);
+    } else if (translated.code) failures.push(`${label} ${sourceSection.id}: unexpected code overlay`);
+    for (const [index, callout] of (translated.callouts || []).entries()) {
+      requireTranslation(sourceSection.callouts[index].title, callout.title, `${label} ${sourceSection.id} callout ${index + 1} title`);
+      requireTranslation(sourceSection.callouts[index].body, callout.body, `${label} ${sourceSection.id} callout ${index + 1} body`);
+    }
+  }
+  requireArrayParity(lesson.modern, overlay.lesson?.modern, `${label} modern notes`);
+  for (const [index, item] of (overlay.lesson?.modern || []).entries()) for (const field of ["topic", "book", "current", "reason"]) requireTranslation(lesson.modern[index][field], item[field], `${label} modern ${index + 1} ${field}`);
+  requireArrayParity(lesson.notebookLinks, overlay.lesson?.notebookLinks, `${label} notebook links`);
+  if (!sameSet(lesson.notebookLinks.map((item) => item.slug), (overlay.lesson?.notebookLinks || []).map((item) => item.slug))) failures.push(`${label}: notebook link slugs differ from English`);
+  if (JSON.stringify(lesson.notebookLinks.map((item) => item.slug)) !== JSON.stringify((overlay.lesson?.notebookLinks || []).map((item) => item.slug))) failures.push(`${label}: notebook link order differs from English`);
+  for (const sourceItem of lesson.notebookLinks) {
+    const item = overlay.lesson?.notebookLinks?.find((candidate) => candidate.slug === sourceItem.slug);
+    if (!item) continue;
+    requireTranslation(sourceItem.reason, item.reason, `${label} notebook reason ${item.slug}`);
+    if (sourceItem.runtime) requireTranslation(sourceItem.runtime, item.runtime, `${label} notebook runtime ${item.slug}`);
+  }
+  requireArrayParity(lesson.exercises, overlay.lesson?.exercises, `${label} exercises`);
+  for (const [index, item] of (overlay.lesson?.exercises || []).entries()) for (const field of ["title", "prompt", "success"]) requireTranslation(lesson.exercises[index][field], item[field], `${label} exercise ${index + 1} ${field}`);
+  requireArrayParity(lesson.references, overlay.lesson?.references, `${label} references`);
+  for (const [index, item] of (overlay.lesson?.references || []).entries()) for (const field of ["type", "title"]) requireTranslation(lesson.references[index][field], item[field], `${label} reference ${index + 1} ${field}`);
+  const sourceNotebooks = catalog.notebooks.filter((notebook) => notebook.chapter === chapterNumber);
+  requireArrayParity(sourceNotebooks, overlay.notebooks, `${label} notebooks`);
+  if (!sameSet(sourceNotebooks.map((item) => item.slug), (overlay.notebooks || []).map((item) => item.slug))) failures.push(`${label}: notebook overlay slugs differ from catalog`);
+  if (JSON.stringify(sourceNotebooks.map((item) => item.slug)) !== JSON.stringify((overlay.notebooks || []).map((item) => item.slug))) failures.push(`${label}: notebook overlay order differs from catalog`);
+  for (const sourceNotebook of sourceNotebooks) {
+    const translated = overlay.notebooks?.find((item) => item.slug === sourceNotebook.slug);
+    if (!translated) continue;
+    requireTranslation(sourceNotebook.title, translated.title, `${label} notebook ${sourceNotebook.slug} title`);
+    requireTranslation(sourceNotebook.summary, translated.summary, `${label} notebook ${sourceNotebook.slug} summary`);
+    requireArrayParity(sourceNotebook.cells, translated.cells, `${label} notebook ${sourceNotebook.slug} cells`);
+    if (!sameSet(sourceNotebook.cells.map((cell) => String(cell.number)), (translated.cells || []).map((cell) => String(cell.number)))) failures.push(`${label} notebook ${sourceNotebook.slug}: cell numbers differ`);
+    if (JSON.stringify(sourceNotebook.cells.map((cell) => cell.number)) !== JSON.stringify((translated.cells || []).map((cell) => cell.number))) failures.push(`${label} notebook ${sourceNotebook.slug}: cell order differs`);
+    for (const sourceCell of sourceNotebook.cells) {
+      const translatedCell = translated.cells?.find((cell) => cell.number === sourceCell.number);
+      if (!translatedCell) continue;
+      requireArrayParity(sourceCell.concepts, translatedCell.concepts, `${label} ${sourceNotebook.slug} cell ${sourceCell.number} concepts`);
+      for (const [index, concept] of (translatedCell.concepts || []).entries()) requireText(concept, `${label} ${sourceNotebook.slug} cell ${sourceCell.number} concept ${index + 1}`);
+      requireTranslation(sourceCell.explanation, translatedCell.explanation, `${label} ${sourceNotebook.slug} cell ${sourceCell.number} explanation`);
+      localizedCells += 1;
+    }
+  }
+}
+if (localizedCells !== 810) failures.push(`Expected 810 Vietnamese notebook explanations, found ${localizedCells}`);
+
+if (sourceOnly) {
+  if (failures.length) {
+    console.error(failures.map((failure) => `- ${failure}`).join("\n"));
+    process.exit(1);
+  }
+  console.log(`Source preflight passed for ${lessons.length} English and ${viOverlays.length} Vietnamese chapters with ${localizedCells} localized cells.`);
+  process.exit(0);
+}
+
+for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", `${localePrefix("vi")}index.html`, `${localePrefix("vi")}search.json`, "audit.json", "assets/styles.css", "assets/app.js"]) {
   try { await access(path.join(dist, file)); } catch { failures.push(`Missing dist/${file}`); }
 }
-for (const chapter of catalog.chapters) {
-  try { await access(path.join(dist, "chapters", String(chapter.number).padStart(2, "0"), "index.html")); } catch { failures.push(`Missing chapter ${chapter.number} page`); }
-}
-for (const notebook of catalog.notebooks) {
-  const file = path.join(dist, "notebooks", notebook.slug, "index.html");
+for (const locale of ["en", "vi"]) {
+  const localeRoot = path.join(dist, localePrefix(locale));
   try {
-    const html = await readFile(file, "utf8");
-    if (!html.includes(notebook.sourceUrl)) failures.push(`${notebook.slug}: reader lacks pinned source URL`);
-    if (html.includes('"outputs"')) failures.push(`${notebook.slug}: notebook output payload leaked into the page`);
-  } catch { failures.push(`Missing notebook page ${notebook.slug}`); }
+    const html = await readFile(path.join(localeRoot, "index.html"), "utf8");
+    validateLocalizedHead(html, locale, "", `${locale} landing page`);
+  } catch { failures.push(`Missing ${locale} landing page`); }
+  for (const chapter of catalog.chapters) {
+    const file = path.join(localeRoot, "chapters", String(chapter.number).padStart(2, "0"), "index.html");
+    try {
+      const html = await readFile(file, "utf8");
+      validateLocalizedHead(html, locale, `chapters/${String(chapter.number).padStart(2, "0")}/`, `${locale} Chapter ${chapter.number}`);
+    } catch { failures.push(`Missing ${locale} chapter ${chapter.number} page`); }
+  }
+  for (const notebook of catalog.notebooks) {
+    const file = path.join(localeRoot, "notebooks", notebook.slug, "index.html");
+    try {
+      const html = await readFile(file, "utf8");
+      if (!html.includes(notebook.sourceUrl)) failures.push(`${locale} ${notebook.slug}: reader lacks pinned source URL`);
+      if (html.includes('"outputs"')) failures.push(`${locale} ${notebook.slug}: notebook output payload leaked into the page`);
+      validateLocalizedHead(html, locale, `notebooks/${notebook.slug}/`, `${locale} ${notebook.slug}`);
+    } catch { failures.push(`Missing ${locale} notebook page ${notebook.slug}`); }
+  }
 }
-const search = JSON.parse(await readFile(path.join(dist, "search.json"), "utf8"));
 const expectedSearchRecords = expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0);
-if (search.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} search records, found ${search.length}`);
-const report = { checkedAt: new Date().toISOString(), expected, actual, failures };
+const enSearch = JSON.parse(await readFile(path.join(dist, "search.json"), "utf8"));
+const viSearch = JSON.parse(await readFile(path.join(dist, localePrefix("vi"), "search.json"), "utf8"));
+if (enSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} English search records, found ${enSearch.length}`);
+if (viSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} Vietnamese search records, found ${viSearch.length}`);
+if (viSearch.some((item) => !item.url.startsWith(localizedRoute("vi")))) failures.push("Vietnamese search contains an English internal route");
+const sitemap = await readFile(path.join(dist, "sitemap.xml"), "utf8");
+if ((sitemap.match(/<url>/g) || []).length !== 162) failures.push("Sitemap must contain 81 route pairs (162 URLs)");
+if ((sitemap.match(/hreflang="vi"/g) || []).length !== 162) failures.push("Every sitemap URL needs a Vietnamese alternate");
+const logicalRoutes = ["", ...catalog.chapters.map((chapter) => `chapters/${String(chapter.number).padStart(2, "0")}/`), ...catalog.notebooks.map((notebook) => `notebooks/${notebook.slug}/`)];
+const expectedSitemapLocations = logicalRoutes.flatMap((logicalPath) => [localizedUrl("en", logicalPath), localizedUrl("vi", logicalPath)]).sort();
+const actualSitemapLocations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]).sort();
+if (JSON.stringify(actualSitemapLocations) !== JSON.stringify(expectedSitemapLocations)) failures.push("Sitemap locations do not exactly match the 81 English/Vietnamese route pairs");
+
+async function htmlFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map(async (entry) => {
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) return htmlFiles(file);
+    return entry.isFile() && entry.name.endsWith(".html") ? [file] : [];
+  }));
+  return nested.flat();
+}
+const generatedHtml = await htmlFiles(dist);
+const htmlCache = new Map();
+for (const sourceFile of generatedHtml) {
+  const html = await readFile(sourceFile, "utf8");
+  htmlCache.set(sourceFile, html);
+  for (const match of html.matchAll(/href="([^"]+)"/g)) {
+    const href = match[1];
+    if (/^(?:https?:|mailto:|tel:|javascript:)/.test(href)) continue;
+    const [pathPart, fragment = ""] = href.split("#", 2);
+    let targetFile = sourceFile;
+    if (pathPart) {
+      const cleanPath = pathPart.split("?", 1)[0];
+      if (!cleanPath.startsWith(siteBase)) { failures.push(`${path.relative(dist, sourceFile)}: internal link escapes the site base: ${href}`); continue; }
+      const relativeTarget = cleanPath.slice(siteBase.length);
+      targetFile = path.join(dist, relativeTarget, cleanPath.endsWith("/") ? "index.html" : "");
+    }
+    try {
+      await access(targetFile);
+      if (fragment) {
+        const targetHtml = htmlCache.get(targetFile) || await readFile(targetFile, "utf8");
+        htmlCache.set(targetFile, targetHtml);
+        const decoded = decodeURIComponent(fragment);
+        if (!targetHtml.includes(`id="${decoded}"`)) failures.push(`${path.relative(dist, sourceFile)}: missing fragment target ${href}`);
+      }
+    } catch { failures.push(`${path.relative(dist, sourceFile)}: broken internal link ${href}`); }
+  }
+}
+
+const report = { checkedAt: new Date().toISOString(), expected, actual: { ...actual, localizedCells }, failures };
 await writeFile(path.join(dist, "validation.json"), JSON.stringify(report, null, 2) + "\n");
 if (failures.length) {
   console.error(failures.map((failure) => `- ${failure}`).join("\n"));
   process.exit(1);
 }
-console.log(`Validated ${actual.chapters} chapters, ${lessons.length} reviewed lessons, ${actual.notebooks} notebooks, and ${actual.codeCells} explained code cells.`);
+console.log(`Validated ${actual.chapters} chapters, ${lessons.length} reviewed lessons, ${actual.notebooks} notebooks, ${actual.codeCells} explained code cells, and ${localizedCells} Vietnamese explanations.`);

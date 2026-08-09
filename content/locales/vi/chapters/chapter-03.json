@@ -1,0 +1,1000 @@
+{
+  "chapter": {
+    "number": 3,
+    "title": "Tensor",
+    "summary": "Xây dựng trực giác về shape, dtype, storage, lập chỉ mục, broadcasting và chiều có tên—bộ từ vựng mà mọi mô hình sau đều sử dụng."
+  },
+  "lesson": {
+    "chapter": 3,
+    "outcomes": [
+      "Dự đoán shape, dtype, device, stride và chủ đích gradient của tensor sau các phép toán thông dụng.",
+      "Phân biệt bản sao với phép chuyển đổi dùng chung storage, đồng thời phân biệt view với reshape có thể tạo bản sao.",
+      "Áp dụng lập chỉ mục và broadcasting trong khi giải thích những chiều nào được căn chỉnh.",
+      "Thay API named tensor đã bị loại bỏ bằng quy ước trục tường minh và các phép toán chiều được hỗ trợ."
+    ],
+    "sections": [
+      {
+        "id": "tensor-contract",
+        "title": "Đọc mỗi tensor như một hợp đồng",
+        "summary": "Shape, dtype, device, bố cục và ý nghĩa quyết định một phép toán có hợp lệ hay không.",
+        "body": [
+          "Tensor là một mảng nhiều chiều có một dtype và một device. Shape cho biết số phần tử trên mỗi trục, còn ứng dụng gán ý nghĩa cho các trục đó. Tensor 32 × 3 × 224 × 224 chỉ hữu ích khi mã thống nhất rằng các chiều lần lượt là batch, kênh, chiều cao và chiều rộng.",
+          "Theo dõi hợp đồng này tại các ranh giới: sau khi giải mã dữ liệu, trước khi gọi mô hình, trước hàm mất mát và trước khi chuyển sang NumPy. In hợp đồng gần các ranh giới ấy sẽ biến nhiều lỗi ma trận hoặc device xuất hiện muộn thành assertion tức thời, dễ đọc."
+        ],
+        "points": [
+          "Shape trả lời có bao nhiêu phần tử trên mỗi trục.",
+          "Dtype chi phối cách biểu diễn, phép toán hợp lệ, độ chính xác và bộ nhớ.",
+          "Device xác định storage và phép tính nằm ở đâu.",
+          "Stride mô tả cách di chuyển chỉ mục ánh xạ tới storage bên dưới."
+        ],
+        "code": {
+          "title": "Kiểm tra và xác nhận hợp đồng tensor"
+        }
+      },
+      {
+        "id": "construction-sharing",
+        "title": "Chủ động chọn cách tạo và chuyển đổi",
+        "summary": "torch.tensor sao chép dữ liệu đầu vào; as_tensor và from_numpy có thể giữ lại storage hiện có.",
+        "body": [
+          "Tạo tensor từ giá trị Python thường sinh storage mới và suy ra dtype nếu không được chỉ định. Tensor được sao chép là độc lập, thường là quy tắc sở hữu đơn giản nhất. Ở ranh giới dữ liệu lớn, tránh sao chép có thể quan trọng, nhưng bộ nhớ dùng chung cũng có nghĩa là thay đổi ở một phía có thể làm phía kia đổi theo.",
+          "Với mảng NumPy trên CPU, from_numpy tạo tensor dùng chung bộ nhớ khi cách biểu diễn mảng được hỗ trợ. as_tensor tránh sao chép khi có thể. Dùng clone() khi giai đoạn sau phải sở hữu một snapshot độc lập."
+        ],
+        "code": {
+          "title": "Quan sát storage dùng chung với NumPy"
+        },
+        "callouts": [
+          {
+            "title": "Dùng chung đồng nghĩa cả hai phía đều có thể thay đổi",
+            "body": "Chuyển đổi zero-copy không tự động an toàn hơn hay nhanh hơn về tổng thể. Hãy ghi rõ quyền sở hữu, đặc biệt khi bộ giải mã tái sử dụng buffer."
+          }
+        ]
+      },
+      {
+        "id": "views-strides",
+        "title": "Suy luận về view qua stride",
+        "summary": "View diễn giải lại storage hiện có; transpose có thể khiến bố cục đó không còn contiguous.",
+        "body": [
+          "Lập chỉ mục cơ bản, transpose, permute, squeeze và nhiều phép toán khác có thể trả về view. Việc tạo view không di chuyển phần tử nào, và ghi qua view có thể làm tensor gốc thay đổi. Stride mới ghi lại cách đi tới các phần tử logic lân cận.",
+          "view() yêu cầu một shape tương thích với mẫu stride hiện tại. reshape() là giao diện an toàn hơn khi bên gọi có thể truyền tensor không contiguous, vì nó trả về view khi có thể và nếu không thì tạo bản sao. Đừng viết mã phụ thuộc vào giả định reshape luôn dùng chung storage."
+        ],
+        "code": {
+          "title": "Lần theo tính contiguous và storage"
+        },
+        "callouts": [
+          {
+            "title": "Lập chỉ mục có hai trường hợp quan trọng",
+            "body": "Lập chỉ mục cơ bản trả về view, còn lập chỉ mục nâng cao trả về bản sao. Phép gán qua cả hai dạng vẫn ghi vào đích được lập chỉ mục."
+          }
+        ]
+      },
+      {
+        "id": "broadcasting",
+        "title": "Căn chỉnh các chiều từ bên phải",
+        "summary": "Broadcasting mở rộng các chiều tương thích có kích thước một hoặc còn thiếu mà không hiện thực hóa dữ liệu lặp lại.",
+        "body": [
+          "Với phép toán theo phần tử, hãy so sánh shape từ chiều cuối về phía trước. Hai chiều tương thích khi kích thước bằng nhau hoặc một kích thước là 1; một chiều đầu bị thiếu được xem như có kích thước 1. Kết quả lấy kích thước tương thích lớn hơn ở mỗi vị trí.",
+          "Broadcasting ngắn gọn nhưng có thể che giấu lỗi ngữ nghĩa. Hệ số kênh có shape 3 sẽ căn với trục cuối, chứ không tự động với trục kênh của batch N × C × H × W. Hãy reshape thành 1 × 3 × 1 × 1 để thể hiện rõ cách căn mong muốn."
+        ],
+        "code": {
+          "title": "Chuẩn hóa batch ảnh theo kênh"
+        },
+        "callouts": [
+          {
+            "title": "Kiểm tra trục ngữ nghĩa",
+            "body": "Các shape tương thích với broadcasting vẫn có thể biểu diễn phép tính sai. Hãy nêu quy ước trục bằng lời và xác nhận các kích thước mong đợi."
+          }
+        ]
+      },
+      {
+        "id": "device-movement",
+        "title": "Di chuyển tensor mà không làm mất hợp đồng",
+        "summary": "Chuyển device có thể sao chép storage, còn chuyển dtype có thể đổi độ chính xác và các phép toán hợp lệ.",
+        "body": [
+          "Các tensor tham gia cùng phép toán phải nằm trên những device tương thích. Chọn bộ tăng tốc khả dụng một lần, sau đó chuyển mô hình và batch tại một ranh giới rõ ràng. Tránh rải các lời gọi cuda() trong mã tiền xử lý và mô hình.",
+          "Chỉ tensor CPU không được theo dõi gradient mới có thể chuyển trực tiếp sang NumPy. Với kết quả mô hình, đường đi tường minh là result.detach().cpu().numpy(). Mỗi bước truyền đạt một thay đổi riêng: ngừng dùng gradient, chuyển storage, rồi công bố view mảng."
+        ],
+        "code": {
+          "title": "Ranh giới device di động"
+        }
+      },
+      {
+        "id": "named-tensor-history",
+        "title": "Thay named tensor bằng mã tường minh được hỗ trợ",
+        "summary": "PyTorch 2.13 đã loại bỏ hoàn toàn Tensor.names và các API liên quan.",
+        "body": [
+          "Notebook named tensor thượng nguồn ghi lại một thử nghiệm từng gắn chuỗi vào các chiều và căn chỉnh chúng theo tên. PyTorch đã ngừng hỗ trợ tính năng đó và loại bỏ hoàn toàn Tensor.names cùng các API liên quan trong 2.13 để giảm chi phí và mã dư thừa. Vì vậy notebook này là tài liệu lịch sử và không được trình bày như mã hiện tại có thể chạy.",
+          "Giữ lại câu hỏi giảng dạy của nó: làm thế nào để mã khiến ý nghĩa chiều khó bị dùng sai? Ví dụ lõi hiện tại nên dùng quy ước trục, hằng số, assertion, reshape, movedim và permute đã được tài liệu hóa. Các hàm trợ giúp nhỏ có thể đặt tên cho phép toán ngữ nghĩa mà không phụ thuộc tính năng tensor đã bị loại bỏ."
+        ],
+        "points": [
+          "Đánh dấu notebook named tensor thượng nguồn là tài liệu lịch sử trước khi người đọc mở nó.",
+          "Không đưa refine_names(), align_as(), rename() hoặc Tensor.names như giải pháp cho PyTorch 2.13.",
+          "Ghi bố cục như NCHW bên cạnh đầu vào và đầu ra của hàm.",
+          "Dùng movedim() hoặc permute() kèm assertion khi thứ tự trục thay đổi."
+        ],
+        "code": {
+          "title": "Làm rõ chủ đích trục mà không dùng named tensor"
+        },
+        "callouts": [
+          {
+            "title": "Notebook lịch sử",
+            "body": "p1ch3/2_named_tensors.ipynb nhắm đến API không tồn tại trong PyTorch 2.13. Chỉ giữ lại để so sánh lịch sử; các ô named tensor được dự kiến sẽ lỗi."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Named tensor",
+        "book": "Chương minh họa Tensor.names, refine_names(), align_as() và phép rút gọn có tên như một tính năng an toàn thử nghiệm.",
+        "current": "Named tensor đã bị loại bỏ hoàn toàn trong PyTorch 2.13",
+        "reason": "Ghi chú phát hành 2.13 chính thức cho biết tính năng đã ngừng hỗ trợ và các API liên quan đã bị xóa. Bài học hiện tại phải dùng quy ước trục tường minh và phép toán shape được hỗ trợ."
+      },
+      {
+        "topic": "Bộ tăng tốc",
+        "book": "Notebook tensor kiểm tra trực tiếp CUDA.",
+        "current": "Dùng torch.accelerator để chọn trung lập với backend",
+        "reason": "Cùng hợp đồng tensor phải chuyển được sang CUDA, MPS, XPU, bộ tăng tốc được hỗ trợ khác hoặc CPU mà không cần nhánh riêng theo nhà cung cấp."
+      },
+      {
+        "topic": "Thay đổi shape",
+        "book": "view(), storage, stride và tính contiguous được khảo sát chi tiết.",
+        "current": "Giữ mô hình storage và ưu tiên reshape() khi không đảm bảo tính contiguous",
+        "reason": "reshape truyền đạt shape logic mong muốn trong khi xử lý stride không tương thích; mã không được giả định nó trả về view hay bản sao."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch3--1_tensors",
+        "reason": "Dùng làm bài thực hành cốt lõi về tạo tensor, lập chỉ mục, storage, stride, dtype, dùng chung NumPy, tuần tự hóa và device."
+      },
+      {
+        "slug": "p1ch3--2_named_tensors",
+        "runtime": "PyTorch 2.12 trở về trước",
+        "reason": "Chỉ dành cho lịch sử: so sánh mục tiêu về chiều ngữ nghĩa với mã bố cục tường minh hiện tại, nhưng không chạy API đã bị loại bỏ trên PyTorch 2.13."
+      },
+      {
+        "slug": "p1ch3--scratch",
+        "reason": "Dùng các ô được chọn để khảo sát storage và view sau khi kiểm tra chúng không phụ thuộc API named tensor đã bị loại bỏ."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Lần theo một pipeline view",
+        "prompt": "Bắt đầu với tensor 2 × 3 × 4, rồi slice, transpose và reshape. Trước mỗi dòng, dự đoán shape, stride, tính contiguous và storage có được dùng chung hay không; sau đó kiểm chứng mọi dự đoán.",
+        "success": "báo cáo phân biệt đúng mọi view với mọi bản sao và minh họa một thay đổi qua storage dùng chung"
+      },
+      {
+        "title": "Chứng minh một phép broadcast",
+        "prompt": "Chuẩn hóa batch N × C × H × W bằng thống kê theo kênh. Viết kiểm tra tương thích từ phải sang trái và thêm assertion từ chối vector thống kê có số kênh sai.",
+        "success": "đầu ra giữ nguyên N × C × H × W và guard báo lỗi rõ ràng khi metadata kênh không tương thích"
+      },
+      {
+        "title": "Hiện đại hóa ý tưởng chiều có tên",
+        "prompt": "Chọn một phép toán hữu ích từ notebook named tensor lịch sử và viết lại cho PyTorch 2.13 bằng tài liệu bố cục tường minh, hằng số chiều, reshape hoặc movedim và assertion shape.",
+        "success": "giải pháp không dùng API named tensor đã bị loại bỏ và làm thứ tự trục sai lỗi ngay gần ranh giới hàm"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu giảng dạy",
+        "title": "Học PyTorch cho Học sâu"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Blog phát hành PyTorch 2.13"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Hướng dẫn về tensor"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Tensor view"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Ngữ nghĩa broadcasting"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch3--1_tensors",
+      "title": "Tensor",
+      "summary": "Khám phá cách tạo tensor, shape, dtype, lập chỉ mục, view, storage, di chuyển device và khả năng tương tác với NumPy.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 1 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tensor. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 13 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 15 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 16 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 17 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 18 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 19,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 19 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 20,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 20 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 21,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 21 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 22,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 22 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 23,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 23 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 24,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 24 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 25,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 25 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 26,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 26 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 27,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 27 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 28,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 28 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 29,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 29 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 30,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 30 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 31,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 31 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 32,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 32 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 33,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 33 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 34,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 34 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 35,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 35 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 36,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 36 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 37,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 37 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 38,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 38 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 39,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 39 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 40,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 40 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 41,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 41 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 42,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 42 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 43,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 43 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 44,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 44 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 45,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 45 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 46,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 46 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 47,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 47 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 48,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 48 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 49,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 49 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 50,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 50 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 51,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 51 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 52,
+          "concepts": [
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 52 thực hiện phép tính attention."
+        },
+        {
+          "number": 53,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 53 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 54,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 54 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 55,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 55 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 56,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 56 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 57,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 57 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 58,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 58 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 59,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 59 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 60,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 60 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 61,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tensor. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 62,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 62 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 63,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 63 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 64,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 64 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 65,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 65 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 66,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 66 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 67,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 67 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 68,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 68 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 69,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 69 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 70,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 70 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 71,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 71 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        },
+        {
+          "number": 72,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 72 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 73,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 73 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 74,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 74 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 75,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 75 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 76,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 76 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 77,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 77 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 78,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 78 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch3--2_named_tensors",
+      "title": "Tensor có tên",
+      "summary": "Gắn tên ngữ nghĩa cho các chiều và dùng chúng để làm phép toán tensor rõ ràng hơn.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tensor có tên. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch3--scratch",
+      "title": "Thử nghiệm tự do",
+      "summary": "Thực hành ví dụ tự do và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Thử nghiệm tự do. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 13 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 15 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 16 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 17 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    }
+  ]
+}

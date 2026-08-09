@@ -1,0 +1,680 @@
+{
+  "chapter": {
+    "number": 2,
+    "title": "Mạng huấn luyện sẵn",
+    "summary": "Chạy các mô hình hữu ích trước khi tự huấn luyện, rồi khảo sát bộ phân loại ảnh, mô hình sinh dữ liệu, hub mô hình và MNIST."
+  },
+  "lesson": {
+    "chapter": 2,
+    "outcomes": [
+      "Nạp mô hình TorchVision huấn luyện sẵn bằng đối tượng weight xác định cả bước tiền xử lý và các danh mục đầu ra.",
+      "Chạy suy luận với mô hình, đầu vào và bộ tăng tốc trên các device tương thích, đồng thời tách chế độ đánh giá khỏi chế độ gradient.",
+      "Giải thích sự khác nhau giữa kiến trúc, state dictionary và pipeline ở cấp tác vụ.",
+      "Kiểm tra mã mô hình và checkpoint bên ngoài với ranh giới rõ ràng về phụ thuộc, giấy phép và độ tin cậy."
+    ],
+    "sections": [
+      {
+        "id": "pretrained-contract",
+        "title": "Xem suy luận huấn luyện sẵn như một hợp đồng",
+        "summary": "Weight, tiền xử lý, bố cục tensor, chế độ đánh giá và metadata nhãn phải nhất quán.",
+        "body": [
+          "Mô hình huấn luyện sẵn hữu ích vì các tham số đã mã hóa mẫu học được từ một tập dữ liệu lớn. Những tham số này chỉ có ý nghĩa khi đầu vào mới được chuẩn bị giống dữ liệu huấn luyện. Vì vậy, đổi kích thước, cắt ảnh, co giãn, thứ tự kênh và chuẩn hóa đều thuộc hợp đồng của mô hình chứ không phải thao tác trang trí.",
+          "Enum weight của TorchVision giữ hợp đồng đó gần với weight. Đối tượng weight cung cấp transform phù hợp và metadata danh mục, nên mã không cần sao chép danh sách nhãn hay nhập thủ công các hằng số chuẩn hóa."
+        ],
+        "points": [
+          "Kiến trúc xác định phép tính; weight chứa trạng thái đã học.",
+          "Transform của weight chuyển ảnh thành tensor C × H × W mà mô hình mong đợi.",
+          "Thêm chiều batch biến C × H × W thành N × C × H × W.",
+          "Điểm số lớp vẫn là logit cho đến khi bước báo cáo chuyển chúng thành xác suất."
+        ],
+        "code": {
+          "title": "Phân loại một ảnh bằng metadata của weight"
+        },
+        "callouts": [
+          {
+            "title": "Không tự nghĩ ra bước tiền xử lý",
+            "body": "Mô hình có thể chạy thành công với phép đổi kích thước hoặc chuẩn hóa sai nhưng vẫn tạo dự đoán gây hiểu lầm. Hãy dùng transform gắn với weight đã chọn."
+          }
+        ]
+      },
+      {
+        "id": "evaluation-device",
+        "title": "Tách hành vi đánh giá khỏi theo dõi gradient",
+        "summary": "model.eval() và torch.inference_mode() bổ trợ nhau, không thể thay thế nhau.",
+        "body": [
+          "Gọi eval() thay đổi các module có hành vi phụ thuộc trạng thái huấn luyện, nổi bật là dropout và batch normalization. Lệnh này không tắt autograd. Inference mode ngăn ghi đồ thị truyền ngược và loại bỏ chi phí theo dõi bổ sung khi đầu ra sẽ không bao giờ tham gia huấn luyện.",
+          "Module và tensor đầu vào cũng phải nằm trên cùng device. PyTorch 2.13 cung cấp truy vấn bộ tăng tốc trung lập với backend, cho phép cùng ví dụ dùng CUDA, MPS, XPU, một bộ tăng tốc được hỗ trợ khác hoặc CPU."
+        ],
+        "code": {
+          "title": "Suy luận trung lập với device"
+        },
+        "callouts": [
+          {
+            "title": "Xác suất dành cho diễn giải",
+            "body": "Giữ logit cho các hàm mất mát như CrossEntropyLoss. Chỉ áp dụng softmax khi cần phân phối xác suất để báo cáo."
+          }
+        ]
+      },
+      {
+        "id": "model-families",
+        "title": "So sánh mô hình bằng nhiều yếu tố hơn tên gọi",
+        "summary": "Độ chính xác, số tham số, phép toán, công thức đầu vào, độ trễ và giấy phép đều quyết định mô hình có phù hợp tác vụ hay không.",
+        "body": [
+          "TorchVision có thể liệt kê mô hình đã đăng ký và lấy định nghĩa weight tương ứng. Điều này giúp khám phá mô hình có thể tái lập, nhưng mục lớn nhất hoặc chính xác nhất không tự động là lựa chọn tốt nhất. Mục tiêu triển khai có thể coi trọng bộ nhớ hoặc độ trễ hơn một chênh lệch nhỏ về độ chính xác.",
+          "Hãy chạy các mô hình ứng viên trên đầu vào và phần cứng đại diện. Ghi lại mã định danh weight chính xác thay vì phụ thuộc mãi vào DEFAULT, vì bí danh đó có thể trỏ đến công thức weight mới hơn trong một bản TorchVision tương lai."
+        ],
+        "points": [
+          "Ghim mã định danh weight tường minh khi cần tái lập chính xác.",
+          "Đọc metadata của weight trước khi so sánh các metric được công bố.",
+          "Benchmark sau giai đoạn làm nóng và đồng bộ bộ tăng tốc bất đồng bộ trước khi đo thời gian.",
+          "Xem lại điều khoản của mô hình và dữ liệu huấn luyện cho mục đích sử dụng."
+        ],
+        "code": {
+          "title": "Khám phá các mô hình phân loại đã đăng ký"
+        }
+      },
+      {
+        "id": "generative-case-studies",
+        "title": "Đọc demo sinh dữ liệu như một hệ thống",
+        "summary": "CycleGAN và điền khuyết ảnh bổ sung các quyết định về kiến trúc, tiền xử lý, checkpoint và phụ thuộc quanh lõi PyTorch.",
+        "body": [
+          "Notebook CycleGAN trình bày định nghĩa mô hình rồi nạp trạng thái đã học. Hãy lần theo ảnh từ bộ giải mã sang tensor đã chuẩn hóa, qua generator rồi trở lại miền hiển thị. Thay truy cập .data cũ bằng detach() trước khi trực quan hóa để mã không vượt qua cơ chế an toàn của autograd.",
+          "Notebook điền khuyết là một pipeline tác vụ ghép từ các gói hệ sinh thái. Giữ nó như nghiên cứu tình huống tùy chọn với khai báo môi trường riêng. Hãy giải thích đối tượng nào là module và tensor PyTorch, gói nào tải weight, và đầu vào nào tạo thành ảnh, mask cùng điều kiện văn bản."
+        ],
+        "points": [
+          "Pipeline tác vụ có thể chứa nhiều thành phần huấn luyện sẵn.",
+          "API bên thứ ba và giấy phép mô hình phải được xem xét riêng với PyTorch.",
+          "Tải mã hoặc weight là một quyết định về độ tin cậy, không chỉ là lời gọi tiện lợi.",
+          "Chuyển đổi để hiển thị nên dùng tensor đã detach thay vì .data."
+        ],
+        "callouts": [
+          {
+            "title": "Ranh giới phụ thuộc tùy chọn",
+            "body": "Không để chương cốt lõi phụ thuộc các notebook sinh dữ liệu. Gói bên ngoài và checkpoint lớn của chúng nên được tách khỏi luồng phân loại TorchVision."
+          }
+        ]
+      },
+      {
+        "id": "checkpoint-safety",
+        "title": "Nạp trạng thái đã học một cách có chủ đích",
+        "summary": "State dictionary là ranh giới checkpoint linh hoạt, còn dữ liệu pickle không đáng tin vẫn nguy hiểm.",
+        "body": [
+          "Quy trình nên dùng là tạo lớp mô hình đã biết, giải tuần tự một state dictionary rồi truyền nó vào load_state_dict(). Trong PyTorch hiện tại, weights_only=True giới hạn unpickler ở trạng thái hướng tensor và các container nguyên thủy. map_location=\"cpu\" cũng tránh cấp phát bộ tăng tốc không cần thiết khi nạp.",
+          "Giới hạn này làm giảm bề mặt thực thi mã nhưng không biến tệp tùy ý thành vô hại. Hãy lấy checkpoint từ nguồn đáng tin, xác minh nguồn gốc và kiểm tra khóa thiếu hoặc ngoài dự kiến thay vì âm thầm chấp nhận kiến trúc không tương thích."
+        ],
+        "code": {
+          "title": "Nạp một state dictionary đáng tin"
+        },
+        "callouts": [
+          {
+            "title": "Không tùy tiện nạp checkpoint không rõ nguồn gốc",
+            "body": "torch.load dùng cơ chế giải tuần tự. weights_only=True thu hẹp những gì có thể được tạo, nhưng nguồn gốc và độ tin cậy vẫn là yêu cầu bắt buộc."
+          }
+        ]
+      },
+      {
+        "id": "mnist-bridge",
+        "title": "Nối suy luận với quá trình học",
+        "summary": "Notebook MNIST cho thấy cùng hợp đồng mô hình nhưng bổ sung mất mát, gradient và cập nhật của trình tối ưu hóa.",
+        "body": [
+          "Bộ phân loại huấn luyện sẵn che khuất lịch sử huấn luyện nhưng vẫn để lộ đầu vào, đầu ra và tham số đã học. Notebook MNIST làm vòng lặp học trở nên trực quan bằng một mạng tích chập nhỏ và data loader.",
+          "Hiện đại hóa vòng lặp mà không đổi mục đích giảng dạy: trả về logit thô, truyền chúng vào CrossEntropyLoss, xóa gradient trước backward và đánh giá dưới eval() kết hợp inference_mode(). Chỉ lưu state dictionary cho lần chạy sau."
+        ],
+        "code": {
+          "title": "Một bước phân loại hiện tại"
+        }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Weight huấn luyện sẵn",
+        "book": "Các ví dụ cũ thường ghép hàm tạo mô hình với transform và nhãn được sao chép thủ công.",
+        "current": "Dùng enum weight, transform của weight và metadata weight trong TorchVision",
+        "reason": "Đối tượng weight giữ tiền xử lý và danh mục nhất quán với đúng tham số đã học, đồng thời tránh giao diện pretrained=True đã lỗi thời."
+      },
+      {
+        "topic": "Suy luận",
+        "book": "Ví dụ có thể gọi eval() hoặc kiểm tra đầu ra qua .data.",
+        "current": "Kết hợp eval() với inference_mode() và dùng detach() để hiển thị",
+        "reason": "Trạng thái đánh giá và ghi gradient là hai cơ chế điều khiển khác nhau, còn .data vượt qua các biện pháp bảo vệ giúp thay đổi autograd dễ hiểu."
+      },
+      {
+        "topic": "Nạp checkpoint",
+        "book": "Một số notebook giải tuần tự checkpoint bằng lời gọi torch.load không giới hạn.",
+        "current": "Nạp state dictionary đáng tin bằng weights_only=True và map_location tường minh",
+        "reason": "Mặc định hiện tại ưu tiên nạp hướng tensor, bố trí device di động và bề mặt tấn công giải tuần tự nhỏ hơn."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch2--1_making_sure_things_work",
+        "reason": "Dùng trước tiên để kiểm tra import, thao tác tensor cơ bản và khả năng thấy bộ tăng tốc."
+      },
+      {
+        "slug": "p1ch2--2_pre_trained_networks",
+        "reason": "Hiện đại hóa luồng phân loại ảnh quanh một enum weight của TorchVision và transform đi kèm."
+      },
+      {
+        "slug": "p1ch2--3_cyclegan",
+        "reason": "Lần theo một generator ảnh-sang-ảnh hoàn chỉnh, đồng thời thay truy cập hiển thị .data cũ bằng detach()."
+      },
+      {
+        "slug": "p1ch2--3_inpainting",
+        "reason": "Nghiên cứu pipeline hệ sinh thái nhiều thành phần như một trường hợp tùy chọn về phụ thuộc và nguồn gốc."
+      },
+      {
+        "slug": "p1ch2--4_model_zoos",
+        "reason": "So sánh các cơ chế khám phá mô hình và ghi lại chính xác mã định danh mô hình cùng weight."
+      },
+      {
+        "slug": "p1ch2--5_mnist",
+        "reason": "Kết nối suy luận huấn luyện sẵn với vòng lặp huấn luyện nhìn thấy được và cách nạp state dictionary an toàn."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Xây dựng bộ dự đoán hiểu weight",
+        "prompt": "Viết predict_image(model_builder, weight, path) để giải mã ảnh, áp dụng weight.transforms(), chạy eval() cùng inference_mode() và trả về ba nhãn đứng đầu từ weight.meta.",
+        "success": "hàm không chứa danh sách lớp hay hằng số chuẩn hóa sao chép và trả về ba xác suất có nhãn"
+      },
+      {
+        "title": "Phá vỡ hợp đồng tiền xử lý",
+        "prompt": "Chạy một ảnh qua transform đúng của weight và qua một luồng đổi kích thước, co giãn cố ý sai. So sánh năm đầu ra đứng đầu và giải thích vì sao chạy thành công không chứng minh tiền xử lý hợp lệ.",
+        "success": "cả hai đầu ra được ghi lại và phần giải thích chỉ ra ít nhất hai giả định đầu vào bị vi phạm"
+      },
+      {
+        "title": "Kiểm tra một luồng checkpoint",
+        "prompt": "Hiện đại hóa một lời gọi torch.load thượng nguồn bằng ghi chú nguồn gốc, weights_only=True, map_location=\"cpu\", nạp trạng thái strict và báo cáo rõ các khóa không tương thích.",
+        "success": "checkpoint đáng tin được nạp vào đúng kiến trúc mà không giải tuần tự toàn bộ mô hình theo cách không giới hạn"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu giảng dạy",
+        "title": "Học PyTorch cho Học sâu"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Mô hình TorchVision và weight huấn luyện sẵn"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Chế độ suy luận"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Lưu và nạp mô hình"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.accelerator"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch2--1_making_sure_things_work",
+      "title": "Kiểm tra mọi thứ hoạt động",
+      "summary": "Kiểm tra môi trường bằng các lệnh import cơ bản, tensor, khả năng nhận diện CUDA và một phép tính nhỏ.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Kiểm tra mọi thứ hoạt động. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "bố trí device"
+          ],
+          "explanation": "Ô 6 đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch2--2_pre_trained_networks",
+      "title": "Mạng huấn luyện sẵn",
+      "summary": "Nạp một mạng thị giác huấn luyện sẵn, chuẩn bị ảnh, chạy suy luận và diễn giải điểm số lớp.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Mạng huấn luyện sẵn. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "import thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 6 nạp các thư viện cần thiết, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "import thư viện",
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 7 nạp các thư viện cần thiết, rồi nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "import thư viện",
+            "shape tensor"
+          ],
+          "explanation": "Ô 10 nạp các thư viện cần thiết. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "đánh giá"
+          ],
+          "explanation": "Ô 11 đánh giá kết quả."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 13 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 15 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 16 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch2--3_cyclegan",
+      "title": "CycleGAN",
+      "summary": "Nạp CycleGAN và chuyển đổi ảnh giữa các miền hình ảnh đã học.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "phép tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `ResNetBlock`, `ResNetGenerator`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "đánh giá"
+          ],
+          "explanation": "Ô 4 đánh giá kết quả."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "import thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 5 nạp các thư viện cần thiết, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 6 chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 7 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "shape tensor",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 10 chuyển đầu vào sang dạng sẵn sàng cho mô hình. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch2--3_inpainting",
+      "title": "Điền khuyết ảnh",
+      "summary": "Dùng pipeline khuếch tán để lấp vùng ảnh bị che theo một prompt văn bản.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "shape tensor",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "mô hình huấn luyện sẵn",
+            "lượt truyền xuôi",
+            "bố trí device"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi nạp hoặc sắp xếp dữ liệu, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình, rồi khởi tạo mô hình huấn luyện sẵn, rồi đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng, rồi đưa dữ liệu qua mô hình. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện",
+            "mô hình huấn luyện sẵn",
+            "khuếch tán",
+            "bố trí device"
+          ],
+          "explanation": "Ô 2 nạp các thư viện cần thiết, rồi khởi tạo mô hình huấn luyện sẵn, rồi đưa tensor hoặc module lên bộ tăng tốc đã chọn khi khả dụng, rồi thực hiện một bước khuếch tán."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 4 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nạp dữ liệu",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô 5 nạp hoặc sắp xếp dữ liệu, rồi thiết lập điều kiện để tái lập kết quả."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch2--4_model_zoos",
+      "title": "Kho mô hình",
+      "summary": "Khám phá và nạp các mô hình tái sử dụng từ những hub mô hình trong hệ sinh thái.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "tiền xử lý",
+            "mô hình huấn luyện sẵn"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình, rồi khởi tạo mô hình huấn luyện sẵn."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện",
+            "tiền xử lý",
+            "mô hình huấn luyện sẵn"
+          ],
+          "explanation": "Ô 2 nạp các thư viện cần thiết, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình, rồi khởi tạo mô hình huấn luyện sẵn."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "tách token"
+          ],
+          "explanation": "Ô này định nghĩa `annotate_image`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 4 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 5 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 6 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch2--5_mnist",
+      "title": "MNIST",
+      "summary": "Huấn luyện và đánh giá một mạng nơ-ron gọn nhẹ trên chữ số viết tay.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô 2 thiết lập điều kiện để tái lập kết quả."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nạp dữ liệu",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 3 nạp hoặc sắp xếp dữ liệu, rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "shape tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "phép tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `Net`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 6 cập nhật các tham số có thể học."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 7 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán, rồi tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    }
+  ]
+}

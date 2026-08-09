@@ -1,0 +1,279 @@
+{
+  "chapter": {
+    "number": 17,
+    "title": "Tối ưu hóa và triển khai",
+    "summary": "Biên dịch, lập hồ sơ, lượng tử hóa, xuất, phục vụ, tạo batch, truyền luồng và chuẩn bị mô hình PyTorch cho biên cùng môi trường production."
+  },
+  "lesson": {
+    "chapter": 17,
+    "outcomes": [
+      "Lập hồ sơ và đo chuẩn mã PyTorch với khởi động, đồng bộ, shape đại diện và phép đo cold start riêng.",
+      "Phân biệt tối ưu hóa JIT bằng torch.compile với bắt đồ thị đầy đủ bằng torch.export, đồng thời viết lại luồng điều khiển phụ thuộc dữ liệu không được hỗ trợ.",
+      "Xuất và xác minh mô hình bằng trình xuất ONNX dựa trên torch.export hiện hành, bao gồm ràng buộc batch động.",
+      "So sánh mô hình lượng tử hóa và dấu phẩy động theo kích thước artifact, độ trễ, bộ nhớ cùng chất lượng đầu ra hoặc nhiệm vụ.",
+      "Xây dựng ranh giới suy luận tải state_dict đáng tin cậy, xác thực đầu vào, tắt autograd và ghi nguồn gốc mô hình."
+    ],
+    "sections": [
+      {
+        "id": "measure-first",
+        "title": "Lập hồ sơ trước khi chọn cách tối ưu hóa",
+        "summary": "Bảng operator và trace xác định thời gian cùng bộ nhớ đi đâu; benchmark quyết định một thay đổi có cải thiện workload thực hay không.",
+        "body": [
+          "Bắt đầu bằng mô hình eager và phân phối đầu vào đại diện. Khởi động thư viện cùng kernel, đồng bộ accelerator quanh phép đo thời gian thực và báo cáo phân phối độ trễ thay vì một lần gọi. Tách tiền xử lý, truyền host-sang-device, thực thi mô hình và hậu xử lý, trừ khi ranh giới dịch vụ đầu-cuối chủ ý bao gồm cả bốn.",
+          "torch.profiler ghi hoạt động CPU và accelerator, đồng thời có thể thu shape operator, bộ nhớ, call stack và sự kiện trace khi bật tùy chọn tương ứng. Lập hồ sơ tạo overhead, vì vậy dùng cửa sổ theo lịch thay vì toàn bộ lượt chạy giống production. Sắp theo self time để tìm operator tốn kém và khảo sát phép toán cha trước khi viết lại mã."
+        ],
+        "points": [
+          "Cold start gồm import, tải trọng số, cấp phát và có thể cả biên dịch.",
+          "Độ trễ warm đo thực thi lặp lại sau khởi tạo.",
+          "Đo thời gian accelerator cần đồng bộ hoặc device event.",
+          "Bộ nhớ đỉnh và chất lượng phải được báo cáo cạnh tốc độ."
+        ],
+        "code": { "title": "Lập hồ sơ một cửa sổ giới hạn" },
+        "callouts": [
+          {
+            "title": "Thời gian profiler không phải thời gian benchmark",
+            "body": "Instrumentation làm thay đổi thực thi. Dùng profiler để chọn mục tiêu, sau đó đo đường đã tối ưu mà không có overhead của profiler."
+          }
+        ]
+      },
+      {
+        "id": "compile-jit",
+        "title": "Dùng torch.compile cho cùng runtime Python",
+        "summary": "torch.compile bắt các vùng đồ thị khi chạy, chuyên biệt hóa bằng guard và có thể quay về Python eager tại graph break.",
+        "body": [
+          "Chỉ biên dịch hàm hoặc mô-đun sau khi kiểm thử tính đúng đắn eager đạt. Backend inductor mặc định có thể hợp nhất phép toán và sinh kernel tối ưu. Lần gọi đầu trả chi phí biên dịch, các lần sau tái dùng mã đã lưu khi guard còn hợp lệ, còn shape hoặc giá trị Python mới có thể kích hoạt tái biên dịch.",
+          "Notebook điều kiện cố ý phơi bày vấn đề: nhánh Python phụ thuộc Tensor có thể graph-break hoặc chuyên biệt hóa theo cách khác với đồ thị triển khai đầy đủ. Dùng fullgraph=True khi chẩn đoán, khảo sát log graph-break và tái biên dịch, đồng thời giữ điều phối dịch vụ không được hỗ trợ bên ngoài mô hình đã biên dịch."
+        ],
+        "code": { "title": "Kiểm tra tương đương eager trước khi đo thời gian" },
+        "callouts": [
+          {
+            "title": "Tối ưu hóa JIT không phải artifact xuất",
+            "body": "torch.compile tăng tốc thực thi trong môi trường Python/PyTorch được hỗ trợ. Nó không phải API tạo đồ thị đầy đủ khả chuyển cho runtime khác."
+          }
+        ]
+      },
+      {
+        "id": "export-full-graph",
+        "title": "Dùng torch.export khi triển khai cần đồ thị tensor đầy đủ",
+        "summary": "torch.export bắt phép tính tensor đã chuẩn hóa trước thời gian chạy và ghi ràng buộc shape làm cho phép bắt đồ thị hợp lệ.",
+        "body": [
+          "Khác torch.compile, export không thể đơn giản chạy vùng không được hỗ trợ qua Python thông thường. Nó phải loại luồng điều khiển Python khỏi chương trình đã bắt hoặc biểu diễn bằng operator bậc cao rõ ràng. Vì thế một nhánh theo x.sum() là bài học hữu ích để viết lại logic phụ thuộc dữ liệu bằng torch.cond.",
+          "Cung cấp đầu vào ví dụ đại diện và khai báo chiều động thay vì giả định một batch đã trace dùng được cho mọi shape. Chạy mô-đun ExportedProgram trên các shape biên và so sánh với kết quả eager. Artifact export đã lưu đang được phát triển tích cực, vì vậy hãy ghim phiên bản PyTorch tạo và tiêu thụ."
+        ],
+        "code": { "title": "Xuất hợp đồng batch động" },
+        "callouts": [
+          {
+            "title": "Shape ví dụ là giả định nếu không khai báo động",
+            "body": "Kiểm thử batch nhỏ nhất, điển hình và lớn nhất được hỗ trợ. Xuất thành công từ một tensor không hứa hỗ trợ shape tùy ý."
+          }
+        ]
+      },
+      {
+        "id": "aot-artifacts",
+        "title": "Đóng gói thực thi ahead-of-time có chủ đích",
+        "summary": "AOTInductor có thể biên dịch ExportedProgram thành artifact .pt2, đánh đổi việc biên dịch lúc chạy bằng một bước build khi triển khai.",
+        "body": [
+          "Notebook thượng nguồn minh họa torch.export rồi tạo và tải package AOTInductor. Đường này hữu ích khi độ trễ khởi động hoặc tích hợp ngoài Python quan trọng, nhưng torch._inductor.aoti_compile_and_package cùng các API liên quan được tài liệu hóa ở trạng thái beta và có thể thay đổi.",
+          "Xem artifact như đầu ra build chuyên biệt nền tảng: ghi phiên bản PyTorch, device đích, hợp đồng shape động, tùy chọn compiler, hash checkpoint nguồn và kết quả xác minh. Không giả định artifact tạo cho một accelerator hoặc bản phát hành có thể chuyển sang nơi khác."
+        ],
+        "points": [
+          "Export thiết lập đồ thị đầy đủ hợp lệ và các ràng buộc.",
+          "Biên dịch AOT hạ đồ thị đó cho môi trường đích.",
+          "Tải artifact vẫn cần xác thực đầu vào và kiểm thử tương đương.",
+          "Lời gọi beta trong namespace riêng cần ghim phiên bản chính xác."
+        ]
+      },
+      {
+        "id": "onnx-export",
+        "title": "Xuất ONNX qua đường dynamo hiện hành",
+        "summary": "PyTorch 2.13 mặc định dùng trình xuất ONNX dựa trên torch.export và có thể trả về ONNXProgram để khảo sát và lưu.",
+        "body": [
+          "Đặt mô hình ở chế độ đánh giá trước khi xuất và truyền đầu vào ví dụ khớp hợp đồng runtime. Với dynamo=True, dùng dynamic_shapes cho chiều biến đổi, không chỉ định đường dẫn đầu ra để nhận ONNXProgram, và yêu cầu tùy chọn report hoặc verify khi gỡ lỗi chuyển đổi.",
+          "Chạy PyTorch eager và runtime ONNX đích trên vài đầu vào cố định, bao gồm biên shape động. So sánh tên, shape, dtype và đầu ra số. Chỉ xuất thành công không chứng minh runtime hỗ trợ operator, độ chính xác hoặc mục tiêu hiệu năng đã chọn."
+        ],
+        "code": { "title": "Tạo và lưu một ONNXProgram" },
+        "callouts": [
+          {
+            "title": "Shape động thay thế một thói quen cũ",
+            "body": "Với trình xuất dynamo, hãy ưu tiên dynamic_shapes. dynamic_axes thuộc đường trình xuất cũ."
+          },
+          {
+            "title": "Xác minh có dependency tùy chọn",
+            "body": "Trình xuất hiện tại cần package ONNX và ONNX Script tương thích, còn verify=True thực thi kết quả bằng ONNX Runtime. Hãy ghim cả ba trong môi trường bài học."
+          }
+        ]
+      },
+      {
+        "id": "quantization",
+        "title": "Lượng tử hóa với giả thuyết về chất lượng và phần cứng",
+        "summary": "Ít bit hơn có thể giảm bộ nhớ trọng số hoặc tăng tốc kernel được hỗ trợ, nhưng nén lưu trữ và tốc độ runtime là hai kết quả khác nhau.",
+        "body": [
+          "Notebook suy ra lượng tử hóa INT8 đối xứng bằng cách chọn scale, làm tròn và clamp trọng số nguyên, rồi giải lượng tử bên trong phép Linear. Giữ phần suy dẫn này vì nó phơi bày sai số lượng tử hóa. Với thí nghiệm production hiện hành, thư viện torchao của PyTorch tập trung tensor lượng tử hiện đại và workflow quantize_.",
+          "Chọn lượng tử chỉ trọng số, activation động, tĩnh hoặc trong huấn luyện từ yêu cầu device đích. Đo kích thước artifact tuần tự hóa, bộ nhớ đỉnh, độ trễ warm và thay đổi đầu ra hoặc chất lượng nhiệm vụ. Checkpoint nhỏ hơn có thể chạy chậm hơn khi backend thiếu kernel hiệu quả hoặc liên tục giải lượng tử trọng số."
+        ],
+        "code": { "title": "Một thí nghiệm chỉ-trọng-số torchao hiện hành" },
+        "callouts": [
+          {
+            "title": "Di chuyển namespace là điều quan trọng",
+            "body": "Lời gọi torch.quantization trong notebook là ngữ cảnh lịch sử hữu ích. torchao là package riêng, vì vậy thí nghiệm mới phải cài và ghim bản phát hành tương thích với bản PyTorch đã chọn."
+          }
+        ]
+      },
+      {
+        "id": "serving-and-edge",
+        "title": "Xây một ranh giới suy luận an toàn rồi chọn runtime",
+        "summary": "FastAPI, Gradio, C++, ONNX và ExecuTorch là các lựa chọn phân phối quanh cùng hợp đồng mô hình đã xác thực.",
+        "body": [
+          "Khi tiến trình khởi động, dựng lại kiến trúc, tải state_dict đáng tin cậy bằng weights_only=True, chuyển đến device được chọn, gọi eval và chạy đầu vào smoke cố định. Khi nhận request, xác thực kích thước cùng dtype, áp dụng chính xác tiền xử lý lúc huấn luyện, dùng inference_mode, giới hạn batch hoặc hàng đợi và trả nguồn gốc mô hình cùng tiền xử lý với lỗi có cấu trúc.",
+          "Gradio hữu ích cho bản trình diễn tương tác và FastAPI cho giao diện dịch vụ, nhưng cả hai là lớp web bên thứ ba chứ không phải định dạng triển khai PyTorch. ONNX nhắm đến runtime ngoài tương thích; AOT/C++ nhắm đến thực thi server hoặc desktop đã biên dịch; ExecuTorch hạ chương trình tương thích export thành tệp .pte cho backend biên. Chọn dựa trên độ trễ, nền tảng, hỗ trợ operator, khởi động, cập nhật và yêu cầu bảo mật."
+        ],
+        "code": { "title": "Tải trọng số suy luận đáng tin cậy một lần" },
+        "callouts": [
+          {
+            "title": "Không deserialize tệp người dùng tải lên",
+            "body": "Endpoint mô hình nhận dữ liệu đầu vào đã xác thực, không nhận tệp mô hình hoặc pickle tùy ý. Nguồn gốc checkpoint thuộc bản build triển khai có kiểm soát."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Biên dịch so với export",
+        "book": "Các ví dụ đặt torch.compile và torch.export cạnh một mô hình có luồng điều khiển Python phụ thuộc Tensor.",
+        "current": "Dùng compile để tối ưu JIT và export để tạo đồ thị triển khai đầy đủ hợp lệ",
+        "reason": "torch.compile có thể graph-break và tiếp tục trong Python; torch.export phải bắt phép tính tensor được hỗ trợ và luồng điều khiển rõ ràng với ràng buộc shape."
+      },
+      {
+        "topic": "ONNX",
+        "book": "Notebook ONNX xuất một mô hình đơn giản và thực thi trong ONNX Runtime.",
+        "current": "Dùng trình xuất dựa trên torch.export với dynamo=True và dynamic_shapes",
+        "reason": "Đây là trình xuất mặc định được khuyến nghị trong PyTorch 2.13. Nó trả ONNXProgram có thể khảo sát và hỗ trợ workflow xác minh."
+      },
+      {
+        "topic": "Lượng tử hóa",
+        "book": "Notebook suy ra trọng số INT8 đối xứng và cũng trình bày API lượng tử động cũ.",
+        "current": "Giữ phần suy dẫn và dùng torchao.quantization cho thí nghiệm mới",
+        "reason": "torchao là thư viện PyTorch hiện hành cho tensor lượng tử hiện đại và workflow quantize_ trên các cấu hình trọng số cùng activation."
+      },
+      {
+        "topic": "An toàn checkpoint",
+        "book": "Ví dụ triển khai tải trạng thái mô hình đã học vào dịch vụ và runtime.",
+        "current": "Dựng lại mã và tải state_dict đáng tin cậy bằng weights_only=True",
+        "reason": "Cách này thu hẹp deserialize, tránh phụ thuộc lớp đã pickle và biến kiến trúc mô hình cùng tiền xử lý thành một phần của mã triển khai đã rà soát."
+      },
+      {
+        "topic": "Triển khai biên",
+        "book": "Script ExecuTorch minh họa xuất và chạy mô hình bên ngoài vòng lặp huấn luyện thông thường.",
+        "current": "Dùng luồng export, hạ tầng, backend và runtime .pte hiện hành của ExecuTorch",
+        "reason": "ExecuTorch 1.3 tài liệu hóa pipeline nhận biết đích từ mô hình tương thích export đến delegate chuyên biệt cho biên và thực thi runtime."
+      }
+    ],
+    "notebookLinks": [
+      { "slug": "p2ch17--profiler_example", "reason": "Lập hồ sơ MLP, khảo sát chi phí operator và liên hệ một lần viết lại forward có mục tiêu với bằng chứng." },
+      { "slug": "p2ch17--compile_example", "reason": "Đối chiếu thực thi eager và compiled quanh luồng điều khiển Python phụ thuộc Tensor cùng các backend khả dụng." },
+      { "slug": "p2ch17--torch_export_example", "reason": "Bắt ExportedProgram, thực thi mô-đun của nó và khảo sát việc tạo package AOTInductor." },
+      { "slug": "p2ch17--onnx_example", "reason": "Xuất mô hình đơn giản sang ONNX và xác minh trong runtime khác." },
+      { "slug": "p2ch17--quantization_example", "reason": "Suy ra lượng tử hóa INT8 đối xứng, so sánh kích thước mô hình và xem lại API động cũ trước torchao." }
+    ],
+    "exercises": [
+      {
+        "title": "Tối ưu một nút thắt đã đo",
+        "prompt": "Lập hồ sơ MLP được cung cấp, xác định một phép toán chi phối hoặc cấp phát tránh được, thực hiện một thay đổi rồi đo chuẩn cold start, warm p50/p95 và bộ nhớ đỉnh so với tính tương đương đầu ra eager.",
+        "success": "tối ưu hóa được chứng minh bằng trace profiler trước/sau và benchmark đồng bộ không instrumentation thay vì trực giác"
+      },
+      {
+        "title": "Xuất luồng điều khiển động an toàn",
+        "prompt": "Viết lại mô hình điều kiện bằng torch.cond, khai báo batch động từ 1 đến 64 và so sánh đầu ra eager, compiled, exported cùng ONNX ở batch 1, 4 và 64.",
+        "success": "mọi đường được hỗ trợ thỏa hợp đồng shape đã khai báo và đạt sai số số học rõ ràng trong runtime đích"
+      },
+      {
+        "title": "Viết bản ghi quyết định triển khai",
+        "prompt": "Lượng tử hóa một mô hình và so sánh kích thước float với lượng tử, độ trễ p50/p95, bộ nhớ đỉnh cùng chất lượng. Sau đó chọn Python, ONNX, AOT/C++ hoặc ExecuTorch cho một đích cụ thể và tài liệu hóa yêu cầu checkpoint, đầu vào, cập nhật cùng bảo mật.",
+        "success": "quyết định runtime tuân theo ràng buộc đích đã đo và ranh giới suy luận dùng eval, inference_mode, xác thực đầu vào cùng tải weights_only đáng tin cậy"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "torch.profiler" },
+      { "type": "PyTorch chính thức", "title": "torch.compile" },
+      { "type": "PyTorch chính thức", "title": "Tổng quan torch.export" },
+      { "type": "PyTorch chính thức", "title": "AOTInductor" },
+      { "type": "PyTorch chính thức", "title": "torch.onnx" },
+      { "type": "PyTorch chính thức", "title": "Lượng tử hóa torchao" },
+      { "type": "PyTorch chính thức", "title": "Ngữ nghĩa tuần tự hóa" },
+      { "type": "PyTorch chính thức", "title": "inference_mode" },
+      { "type": "PyTorch chính thức", "title": "Bắt đầu với ExecuTorch" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch17--compile_example",
+      "title": "Ví dụ biên dịch",
+      "summary": "Biên dịch mô hình PyTorch và so sánh thực thi eager với compiled.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "định nghĩa mô hình", "lan truyền thuận", "đánh giá", "đặt trên thiết bị"], "explanation": "Ô này định nghĩa `ConditionalModel`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["xuất và triển khai"], "explanation": "Ô 2 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 3, "concepts": ["xuất và triển khai"], "explanation": "Ô 3 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 4, "concepts": ["lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 4 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 5, "concepts": ["lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 5 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["lan truyền thuận", "xuất và triển khai"], "explanation": "Ô 7 đưa dữ liệu qua mô hình rồi chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." }
+      ]
+    },
+    {
+      "slug": "p2ch17--onnx_example",
+      "title": "Ví dụ ONNX",
+      "summary": "Xuất mô hình sang ONNX và thực thi bằng runtime có khả năng tương tác.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "định nghĩa mô hình", "lan truyền thuận", "đánh giá"], "explanation": "Ô này định nghĩa `SimpleModel`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["lan truyền thuận"], "explanation": "Ô 2 đưa dữ liệu qua mô hình." },
+        { "number": 3, "concepts": ["xuất và triển khai"], "explanation": "Ô 3 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 4, "concepts": ["nhập thư viện", "xuất và triển khai"], "explanation": "Ô 4 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 5, "concepts": ["xuất và triển khai"], "explanation": "Ô 5 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 6, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." },
+        { "number": 7, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch17--profiler_example",
+      "title": "Ví dụ profiler",
+      "summary": "Thu thời gian operator và thông tin bộ nhớ bằng profiler PyTorch.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "định nghĩa mô hình", "lan truyền thuận", "xuất và triển khai"], "explanation": "Ô này định nghĩa `MLPModule`, `MultiMLP`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["lan truyền thuận", "cơ chế chú ý", "xuất và triển khai", "đặt trên thiết bị"], "explanation": "Ô này định nghĩa `run_model`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 3, "concepts": ["lan truyền thuận"], "explanation": "Ô 3 đưa dữ liệu qua mô hình." },
+        { "number": 4, "concepts": ["lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 4 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 5, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Ví dụ profiler. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 6, "concepts": ["lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 6 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 7, "concepts": ["lan truyền thuận", "xuất và triển khai", "đặt trên thiết bị"], "explanation": "Ô 7 đưa dữ liệu qua mô hình rồi chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." }
+      ]
+    },
+    {
+      "slug": "p2ch17--quantization_example",
+      "title": "Ví dụ lượng tử hóa",
+      "summary": "Giảm độ chính xác số và khảo sát tác động lên kích thước mô hình cùng suy luận.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "hình dạng tensor", "tiền xử lý", "mô hình huấn luyện sẵn", "lan truyền thuận", "token hóa"], "explanation": "Ô này định nghĩa `get_serialized_model_size_in_mb`, `run_model`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["mô hình huấn luyện sẵn", "lan truyền thuận", "xuất và triển khai"], "explanation": "Ô 2 dựng mô hình, đưa dữ liệu qua mô hình rồi chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 3, "concepts": ["mô hình huấn luyện sẵn", "lan truyền thuận", "xuất và triển khai"], "explanation": "Ô 3 dựng mô hình, đưa dữ liệu qua mô hình rồi chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 4, "concepts": ["nhập thư viện", "hình dạng tensor", "định nghĩa mô hình", "mô hình huấn luyện sẵn", "lan truyền thuận", "xuất và triển khai"], "explanation": "Ô này định nghĩa `int8_symmetric_quantize`, `quantize_linear_layers_to_int8`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 5, "concepts": ["định nghĩa mô hình", "mô hình huấn luyện sẵn", "lan truyền thuận", "xuất và triển khai"], "explanation": "Ô 5 dựng mô hình, đưa dữ liệu qua mô hình rồi chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 6, "concepts": ["đánh giá"], "explanation": "Ô 6 đánh giá kết quả." },
+        { "number": 7, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch17--torch_export_example",
+      "title": "Ví dụ Torch Export",
+      "summary": "Bắt đồ thị khả chuyển bằng torch.export và khảo sát các ràng buộc của nó.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "định nghĩa mô hình", "lan truyền thuận", "đánh giá"], "explanation": "Ô này định nghĩa `SimpleModel`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 2, "concepts": ["nhập thư viện", "xuất và triển khai"], "explanation": "Ô 2 chuẩn bị mô hình cho suy luận hoặc phục vụ hiệu quả." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["thí nghiệm Python"], "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 5, "concepts": ["nhập thư viện", "lan truyền thuận"], "explanation": "Ô 5 đưa dữ liệu qua mô hình." },
+        { "number": 6, "concepts": ["lan truyền thuận"], "explanation": "Ô 6 đưa dữ liệu qua mô hình." }
+      ]
+    }
+  ]
+}

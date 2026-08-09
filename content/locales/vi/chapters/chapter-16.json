@@ -1,0 +1,207 @@
+{
+  "chapter": {
+    "number": 16,
+    "title": "Huấn luyện phân tán",
+    "summary": "Mở rộng vượt quá một tiến trình bằng process group, collective, DDP, song song mô hình và pipeline, device mesh cùng FSDP."
+  },
+  "lesson": {
+    "chapter": 16,
+    "outcomes": [
+      "Giải thích rank, world size, process group, backend và phép toán collective mà không phụ thuộc một bố cục máy duy nhất.",
+      "Khởi chạy job DDP một-tiến-trình-mỗi-accelerator bằng torchrun, DistributedSampler và checkpoint theo rank.",
+      "Dùng DeviceMesh để mô tả nhất quán các chiều song song có tên trên mọi rank.",
+      "Áp dụng FSDP2 từ dưới lên và phân biệt song song dữ liệu, sharding toàn phần, tensor và pipeline theo thành phần chúng phân hoạch.",
+      "Thiết kế kiểm thử tính đúng đắn phân tán để phát hiện ngữ nghĩa global batch sai, mẫu trùng lặp và collective không khớp."
+    ],
+    "sections": [
+      {
+        "id": "process-model",
+        "title": "Tư duy theo rank trước khi nghĩ đến GPU",
+        "summary": "PyTorch phân tán chạy một chương trình trong nhiều tiến trình, mỗi tiến trình có rank và cùng một cách nhìn về world size.",
+        "body": [
+          "Process group kết nối các rank tham gia giao tiếp. Global rank xác định tiến trình trong toàn job, local rank xác định device của nó trên một host, còn world size đếm số tiến trình tham gia. Cùng một tệp Python thường chạy trên mọi rank, vì vậy hành vi theo điều kiện rank phải có chủ đích.",
+          "Backend triển khai giao tiếp cho các device và nền tảng cụ thể. Gloo hữu ích cho minh họa CPU, còn NCCL là backend thông thường của CUDA. Việc khởi tạo, thứ tự collective, shape tensor và dtype phải thống nhất giữa các rank; bất đồng thường biểu hiện thành treo thay vì ngoại lệ thân thiện."
+        ],
+        "points": [
+          "Rank là danh tính tiến trình, không tự động là chỉ số device trên nhiều host.",
+          "Local rank chọn device trên host hiện tại.",
+          "World size và thông tin rendezvous phải thống nhất.",
+          "Mọi job thành công đều hủy process group trong bước dọn dẹp."
+        ],
+        "code": { "title": "Đọc metadata khởi chạy một cách rõ ràng" },
+        "callouts": [
+          {
+            "title": "Kernel notebook không phải trình khởi chạy phù hợp",
+            "body": "Dùng notebook để học khái niệm, sau đó chạy ví dụ nhiều tiến trình dưới dạng script bằng torchrun. Process group trong notebook được khởi tạo lặp lại rất khó dọn dẹp đúng."
+          }
+        ]
+      },
+      {
+        "id": "collective-contracts",
+        "title": "Học collective như các hợp đồng tensor đồng bộ",
+        "summary": "Broadcast phân phối tensor từ một nguồn; all-reduce kết hợp giá trị của mọi rank và trả kết quả cho từng rank.",
+        "body": [
+          "Trong broadcast, rank nguồn sở hữu dữ liệu ban đầu có ý nghĩa và mọi bên tham gia cung cấp tensor nhận tương thích. Trong all-reduce sum, mọi rank đều đóng góp và nhận tổng toàn cục. Barrier phối hợp tiến độ nhưng không sửa được thứ tự collective không khớp.",
+          "Dùng tensor nhỏ đã biết để dự đoán kết quả bằng tay. Ghi rank trước và sau mỗi lời gọi, bật gỡ lỗi phân tán khi cần và thêm timeout trong môi trường kiểm thử. Nếu rank 0 gọi broadcast trong khi rank 1 gọi all_reduce, chương trình là sai ngay cả khi shape tensor tình cờ khớp."
+        ],
+        "code": { "title": "Xác minh một bất biến all-reduce" },
+        "callouts": [
+          {
+            "title": "Giao tiếp có thứ tự",
+            "body": "Collective không phải thông điệp mà PyTorch ghép theo tên. Mọi rank trong group phải đi vào các phép toán tương thích theo thứ tự tương thích."
+          }
+        ]
+      },
+      {
+        "id": "torchrun-ddp",
+        "title": "Mở rộng vòng lặp huấn luyện eager bằng DDP",
+        "summary": "DistributedDataParallel sao chép mô hình và đồng bộ gradient; nó không tự động phân hoạch Dataset đầu vào.",
+        "body": [
+          "Khởi chạy một tiến trình cho mỗi accelerator bằng torchrun, chuyển mô hình đến device cục bộ rồi bọc bằng DistributedDataParallel. Trong backward, DDP nhóm giao tiếp gradient để các bản sao nhận gradient đã đồng bộ trước mỗi bước optimizer. Mỗi rank thường giữ optimizer riêng trên bản sao cục bộ.",
+          "DistributedSampler phân hoạch chỉ số giữa các rank, nhưng mặc định drop_last=False sẽ đệm bằng chỉ số trùng khi kích thước Dataset không chia hết cho world size. Đặt drop_last=True tránh đệm bằng cách bỏ phần đuôi. Hãy chọn và ghi sự đánh đổi đó, gọi sampler.set_epoch(epoch) để xáo trộn thay đổi xác định, và giữ ngữ nghĩa global batch tương đương khi so với đường cơ sở một tiến trình. Chỉ một rank được chỉ định mới nên ghi checkpoint thông thường dùng chung."
+        ],
+        "code": { "title": "Ranh giới dữ liệu DDP" },
+        "callouts": [
+          {
+            "title": "Local batch không phải global batch",
+            "body": "Với N rank, local batch B thường tạo global batch N×B. Điều chỉnh phép so sánh hoặc thí nghiệm learning rate một cách rõ ràng thay vì khẳng định DDP tự làm đổi hội tụ."
+          }
+        ]
+      },
+      {
+        "id": "device-mesh",
+        "title": "Đặt tên các chiều của bố cục song song",
+        "summary": "DeviceMesh biểu diễn cách sắp xếp rank N chiều và cho phép API sau giao tiếp theo các chiều có tên.",
+        "body": [
+          "Mesh hai chiều có thể đặt tên một trục dp cho song song dữ liệu sao chép hoặc sharding, và trục kia tp cho song song tensor. Cắt mesh[\"tp\"] cho group mà dọc theo đó tensor mô hình được phân hoạch, còn mesh[\"dp\"] có thể xác định các bản sao của những phân hoạch đó.",
+          "Mọi rank phải tạo cùng mesh và tên chiều. Không khớp có thể âm thầm làm treo. DeviceMesh trong PyTorch 2.13 hỗ trợ kiểu device CPU và CUDA hoặc tương tự CUDA, không hỗ trợ device trừu tượng meta. Hãy dựng và in mesh CPU/Gloo nhỏ dưới torchrun để hiểu cách đánh chỉ số, rồi dùng init_device_mesh trong job thật nơi world size bằng tích các chiều mesh."
+        ],
+        "code": { "title": "Tạo mesh hai chiều có tên" }
+      },
+      {
+        "id": "fsdp2",
+        "title": "Sharding tham số, gradient và trạng thái optimizer bằng FSDP2",
+        "summary": "FSDP2 dùng sharding theo từng tham số dựa trên DTensor và chỉ all-gather nhóm tham số khi phép tính cần chúng.",
+        "body": [
+          "DDP sao chép toàn bộ mô hình trên mọi rank, vì vậy trạng thái mô hình có thể vượt bộ nhớ của một accelerator. FSDP2 fully_shard phân hoạch tham số, gradient và trạng thái optimizer trên mesh. Trước khi mô-đun chạy, nó all-gather tham số; sau tính toán, nó có thể sharding lại và giải phóng biểu diễn đầy đủ.",
+          "Áp dụng fully_shard từ dưới lên cho các lớp lặp, rồi cho mô-đun gốc. Mỗi lần áp dụng xác định một group giao tiếp, cho phép chồng lấp tính toán của một lớp với all-gather tham số lớp kế tiếp. Tạo optimizer sau khi sharding để nó thấy tham số DTensor. Dùng công cụ checkpoint phân tán cho trạng thái có thể mở rộng thay vì thu thập mọi tensor lớn trên mọi rank."
+        ],
+        "code": { "title": "Áp dụng FSDP2 từ dưới lên" },
+        "callouts": [
+          {
+            "title": "FSDP1 và FSDP2 là các API khác nhau",
+            "body": "Script đi kèm có thể minh họa FullyShardedDataParallel. Tài liệu khóa học mới nhắm tới FSDP2 fully_shard và gắn nhãn ví dụ dựa trên wrapper là ngữ cảnh FSDP1."
+          }
+        ]
+      },
+      {
+        "id": "tensor-and-pipeline",
+        "title": "Phân hoạch độ rộng mô hình hoặc các giai đoạn thực thi khi song song dữ liệu chưa đủ",
+        "summary": "Song song tensor sharding các phép toán tương thích; song song pipeline gán các giai đoạn mô hình và microbatch cho các rank khác nhau.",
+        "body": [
+          "Song song tensor PyTorch xây trên DTensor và một lát DeviceMesh một chiều. Kiểu Colwise và Rowwise phân hoạch phép toán Linear hoặc Embedding tương thích và chèn phép phân phối lại cần thiết. API này đang thử nghiệm, vì vậy hãy ghim phiên bản PyTorch và bắt đầu với mô-đun nhỏ có thể tái dựng và kiểm tra kết quả phân tán.",
+          "torch.distributed.pipelining phân hoạch thực thi thành các giai đoạn và lập lịch microbatch đi qua chúng. Package đang ở trạng thái alpha trong PyTorch 2.13. Shape đầu vào/đầu ra tĩnh của giai đoạn, cân bằng thời gian và lựa chọn lịch ảnh hưởng đến tính đúng đắn cùng mức sử dụng. Song song pipeline và tensor có thể kết hợp với FSDP hoặc DDP, nhưng mỗi chiều thêm làm tăng độ phức tạp checkpoint và gỡ lỗi."
+        ],
+        "points": [
+          "Song song dữ liệu phân hoạch ví dụ trong khi sao chép hoặc sharding trạng thái mô hình.",
+          "Song song tensor phân hoạch tensor và phép toán bên trong một lớp.",
+          "Song song pipeline phân hoạch thực thi mô hình tuần tự.",
+          "Thiết kế lai cần các chiều mesh có tên và kế hoạch checkpoint rõ ràng."
+        ]
+      },
+      {
+        "id": "distributed-review",
+        "title": "Kiểm thử ngữ nghĩa phân tán, không chỉ thông lượng",
+        "summary": "Một job chạy không treo vẫn có thể huấn luyện trên mẫu trùng, lấy trung bình loss sai hoặc lưu trạng thái không đầy đủ.",
+        "body": [
+          "So sánh một lần cập nhật với tham chiếu một tiến trình bằng đầu vào toàn cục tương đương. Thu thập danh tính mẫu để xác minh độ bao phủ mong đợi, kiểm tra tham số được sao chép khớp nhau sau cập nhật DDP, và reduce tử số cùng mẫu số metric trước khi tính tỷ lệ. Làm log nhận biết rank và đưa world size cùng mesh vào mọi bản kê khai lượt chạy.",
+          "Đo chuẩn sau khi xác nhận đúng: khởi động kernel, đồng bộ device, tách thời gian nạp dữ liệu và báo cáo hiệu suất mở rộng thay vì chỉ tổng thông lượng. Kiểm thử khởi động lại với cùng world size trước, sau đó tài liệu hóa liệu định dạng checkpoint có hỗ trợ sharding lại sang topology khác hay không."
+        ],
+        "code": { "title": "Reduce số lượng trước khi tính metric" }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Khởi chạy",
+        "book": "Các script minh họa multiprocessing, store rõ ràng, biến môi trường và torchrun để phơi bày bước khởi tạo.",
+        "current": "Dùng torchrun cho job thật và giữ thiết lập thủ công như cơ chế học tập",
+        "reason": "torchrun cung cấp môi trường rank và rendezvous nhất quán, đồng thời hỗ trợ workflow phân tán hướng đến khởi động lại."
+      },
+      {
+        "topic": "Song song dữ liệu có sharding",
+        "book": "Ví dụ đi kèm dùng wrapper FullyShardedDataParallel.",
+        "current": "Dạy FSDP2 thông qua torch.distributed.fsdp.fully_shard",
+        "reason": "FSDP2 dùng sharding từng tham số dựa trên DTensor, bảo toàn cấu trúc mô-đun và là hướng hiện hành được khuyến nghị cho tài liệu mới."
+      },
+      {
+        "topic": "Cấu trúc liên kết",
+        "book": "DeviceMesh giới thiệu cách nhìn có cấu trúc về các chiều dữ liệu và pipeline.",
+        "current": "Dùng chiều DeviceMesh có tên xuyên suốt kế hoạch FSDP2 và song song tensor",
+        "reason": "Lát có tên làm group giao tiếp rõ ràng, nhưng mesh phải giống hệt trên mọi rank để tránh treo âm thầm."
+      },
+      {
+        "topic": "API song song mô hình",
+        "book": "Các script xây ví dụ song song mô hình, tensor và pipeline từ các primitive ngày càng mạnh.",
+        "current": "Gắn nhãn song song tensor là thử nghiệm và distributed.pipelining là alpha",
+        "reason": "Tài liệu PyTorch 2.13 chính thức cảnh báo các API này có thể thay đổi; ví dụ khóa học phải ghim môi trường."
+      }
+    ],
+    "notebookLinks": [
+      { "slug": "p2ch16--1_motivator", "reason": "Dùng ví dụ đồng thời đơn giản để phân biệt công việc song song với huấn luyện gradient phân tán." },
+      { "slug": "p2ch16--device_mesh", "reason": "Khảo sát shape mesh, tên chiều và chọn submesh trước khi chạy script nhiều tiến trình." }
+    ],
+    "exercises": [
+      {
+        "title": "Chứng minh kết quả collective",
+        "prompt": "Khởi chạy bốn rank và kiểm thử broadcast cùng all-reduce trên các giá trị có kết quả tính tay. Thêm timeout và log theo rank, rồi cố ý làm không khớp shape tensor trong một kiểm thử thất bại dự kiến riêng.",
+        "success": "job hợp lệ khớp chính xác tensor kỳ vọng và trường hợp thất bại được chẩn đoán từ log mà không để lại process group mồ côi"
+      },
+      {
+        "title": "Khớp một lần cập nhật DDP",
+        "prompt": "Tạo một global batch, chia nó trên hai rank DDP và so sánh một lần cập nhật optimizer với mô hình một tiến trình dùng toàn batch cùng khởi tạo.",
+        "success": "tham số khớp trong sai số và phần giải thích bao quát phép reduce loss, local batch, global batch cùng hành vi sampler"
+      },
+      {
+        "title": "Thiết kế mesh lai",
+        "prompt": "Với tám accelerator, xác định mesh có tên và chọn DDP hoặc FSDP2, song song tensor cùng giai đoạn pipeline tùy chọn cho mô hình không vừa một device. Nêu thành phần được sharding, giao tiếp và checkpoint dọc mỗi chiều.",
+        "success": "tích các chiều mesh bằng world size và kế hoạch bao gồm kiểm thử tính đúng đắn, nhãn ổn định API cùng chiến lược khởi động lại"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "torch.distributed và DeviceMesh" },
+      { "type": "PyTorch chính thức", "title": "Nạp dữ liệu và DistributedSampler" },
+      { "type": "PyTorch chính thức", "title": "Bắt đầu với DistributedDataParallel" },
+      { "type": "PyTorch chính thức", "title": "Bắt đầu với FSDP2" },
+      { "type": "PyTorch chính thức", "title": "API FSDP2 fully_shard" },
+      { "type": "PyTorch chính thức", "title": "Công thức checkpoint phân tán" },
+      { "type": "PyTorch chính thức", "title": "Song song tensor" },
+      { "type": "PyTorch chính thức", "title": "Song song pipeline" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch16--1_motivator",
+      "title": "Ví dụ tạo động lực",
+      "summary": "Làm rõ động lực thực thi phân tán bằng cách đo hoặc quan sát giới hạn của một tiến trình.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Ví dụ tạo động lực. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["tích chập"], "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 3, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch16--device_mesh",
+      "title": "Device Mesh",
+      "summary": "Tổ chức rank thành các chiều mesh có tên cho chiến lược song song lai.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "thực thi phân tán"], "explanation": "Ô 1 phối hợp công việc giữa các tiến trình." },
+        { "number": 2, "concepts": ["thực thi phân tán"], "explanation": "Ô 2 phối hợp công việc giữa các tiến trình." },
+        { "number": 3, "concepts": ["thực thi phân tán"], "explanation": "Ô 3 phối hợp công việc giữa các tiến trình." },
+        { "number": 4, "concepts": ["thực thi phân tán"], "explanation": "Ô 4 phối hợp công việc giữa các tiến trình." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    }
+  ]
+}

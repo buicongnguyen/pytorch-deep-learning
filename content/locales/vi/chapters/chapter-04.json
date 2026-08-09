@@ -1,0 +1,725 @@
+{
+  "chapter": {
+    "number": 4,
+    "title": "Biểu diễn dữ liệu trong thế giới thực",
+    "summary": "Biến ảnh, ảnh quét thể tích, bảng, chuỗi thời gian, văn bản, âm thanh và video thành tensor mà mô hình có thể sử dụng."
+  },
+  "lesson": {
+    "chapter": 4,
+    "outcomes": [
+      "Mô tả một mẫu dữ liệu thực bằng bố cục tensor, dtype, miền giá trị, đơn vị và mục tiêu tường minh.",
+      "Tách giải mã khỏi biến đổi tensor để có thể kiểm thử độc lập từng giai đoạn.",
+      "Chuẩn bị dữ liệu ảnh, thể tích, bảng, chuỗi thời gian, văn bản, âm thanh và video mà không làm mất thông tin ngữ nghĩa.",
+      "Nhận biết rò rỉ dữ liệu, thay đổi bộ nhớ dùng chung, co giãn không hợp lệ và ghép batch có độ dài biến đổi trước khi chúng tới mô hình."
+    ],
+    "sections": [
+      {
+        "id": "representation-pipeline",
+        "title": "Biến mọi dạng dữ liệu thành một pipeline tường minh",
+        "summary": "Giải mã, sắp xếp, ép kiểu, co giãn, chuẩn hóa và ghép batch là những quyết định riêng biệt.",
+        "body": [
+          "Mô hình không bao giờ nhận một bức ảnh, bản ghi rượu vang, câu văn hay âm thanh theo cách con người hiểu. Nó nhận các con số với thứ tự trục và cách biểu diễn số. Tiền xử lý tốt giữ lại cấu trúc hữu ích đồng thời làm rõ mọi giả định.",
+          "Tách phần giải mã tệp khỏi phần chuẩn bị tensor. Bộ giải mã trả lời cách byte trở thành mảng. Bộ tiền xử lý trả lời cách mảng đó trở thành đầu vào mô hình. Sự tách biệt này cho phép kiểm thử bố cục, miền giá trị và chuẩn hóa bằng tensor tổng hợp nhỏ mà không phải đọc tệp nhiều lần."
+        ],
+        "points": [
+          "Ghi lại bố cục, dtype, miền giá trị, đơn vị, giá trị thiếu và mục tiêu cho mỗi mẫu.",
+          "Chỉ tính thống kê cần khớp trên tập huấn luyện.",
+          "Xác nhận hợp đồng sau tiền xử lý và sau khi collation.",
+          "Giữ metadata có thể đảo ngược như từ vựng hoặc ánh xạ danh mục bên cạnh pipeline."
+        ],
+        "code": {
+          "title": "Báo cáo tensor tái sử dụng được"
+        }
+      },
+      {
+        "id": "images-volumes",
+        "title": "Bảo toàn các trục không gian trong ảnh và thể tích",
+        "summary": "Ảnh thường dùng C × H × W; thể tích y khoa thêm trục chiều sâu với khoảng cách vật lý có ý nghĩa.",
+        "body": [
+          "Bộ giải mã ảnh có thể trả dữ liệu chiều cao × chiều rộng × kênh, trong khi mô hình thị giác PyTorch thường nhận mẫu kênh × chiều cao × chiều rộng và batch N × C × H × W. I/O của TorchVision giải mã tệp thành tensor; transforms v2 sau đó chuyển đổi, co giãn, chuẩn hóa hoặc biến đổi đồng thời các đầu vào dạng ảnh bằng những phép toán tường minh.",
+          "Thể tích CT thêm chiều sâu, nhưng chỉ mục voxel không mô tả đầy đủ hình học vật lý. Khoảng cách lát cắt, hướng và hiệu chuẩn cường độ thuộc metadata của mẫu. Hãy bảo toàn chúng ngay cả khi bài tập đầu chỉ dùng một vùng cắt tensor."
+        ],
+        "code": {
+          "title": "Chuyển đổi ảnh hiện tại bằng transforms v2"
+        },
+        "callouts": [
+          {
+            "title": "Thứ tự trục có thể trông vẫn hợp lý",
+            "body": "H × W × C và C × H × W chứa cùng số phần tử. reshape không phải phép hoán vị trục hợp lệ; hãy dùng permute hoặc movedim."
+          }
+        ]
+      },
+      {
+        "id": "tabular-data",
+        "title": "Giữ ngữ nghĩa dữ liệu bảng sau khi chuyển thành tensor",
+        "summary": "Cột liên tục, thứ bậc, phân loại, bị thiếu và cột mục tiêu cần cách xử lý khác nhau.",
+        "body": [
+          "Tệp hình chữ nhật không có nghĩa mọi cột đều nên trở thành cùng một loại đặc trưng dấu phẩy động. Tách mục tiêu trước, ghi tên cột, kiểm tra giá trị thiếu và quyết định giá trị phân loại nào cần encoding thay vì một khoảng cách số được bịa ra.",
+          "Chuẩn hóa đặc trưng liên tục bằng thống kê chỉ tính từ các hàng huấn luyện. Lưu những thống kê đó và áp dụng không đổi cho hàng validation và test. Nhãn cho hàm mất mát phân loại theo chỉ mục lớp thường nên dùng torch.long thay vì dấu phẩy động."
+        ],
+        "code": {
+          "title": "Khớp và áp dụng thống kê huấn luyện"
+        },
+        "callouts": [
+          {
+            "title": "Tránh rò rỉ trong tiền xử lý",
+            "body": "Thống kê tính từ hàng validation hoặc test cho phép thông tin dữ liệu đánh giá ảnh hưởng đến cách biểu diễn huấn luyện."
+          }
+        ]
+      },
+      {
+        "id": "time-series",
+        "title": "Tạo cửa sổ thời gian mà không nhầm với trục batch",
+        "summary": "Biểu diễn chuỗi phải nêu rõ vị trí của thời gian, đặc trưng và các mẫu độc lập.",
+        "body": [
+          "Notebook xe đạp reshape các hàng theo giờ thành khối theo ngày rồi transpose các trục. Đây là phép toán ngữ nghĩa: mỗi mẫu mới chứa một cửa sổ thời gian thay vì một khối bộ nhớ liên tiếp tùy ý. Hãy xác minh số hàng chia hết cho kích thước cửa sổ hoặc xử lý tường minh cửa sổ chưa đủ.",
+          "Chia theo thời gian trước khi khớp chuẩn hóa nếu mục tiêu là dự đoán tương lai. Trộn ngẫu nhiên quan sát tương lai vào huấn luyện có thể tạo đánh giá lạc quan ngay cả khi mã tensor đúng."
+        ],
+        "code": {
+          "title": "Tạo cửa sổ ngày không chồng lấp"
+        },
+        "points": [
+          "Nêu rõ mô hình mong đợi N × T × F hay N × F × T.",
+          "Giữ timestamp cho đến khi đã xác minh thứ tự và khoảng trống.",
+          "Quyết định cửa sổ có chồng lấp hay không và điều đó ảnh hưởng rò rỉ giữa các tập ra sao."
+        ]
+      },
+      {
+        "id": "text-representation",
+        "title": "Tách ký hiệu văn bản khỏi mã định danh của mô hình",
+        "summary": "Từ vựng tạo ánh xạ đảo ngược giữa token con người đọc được và ID số nguyên.",
+        "body": [
+          "Notebook Jane Austen minh họa one-hot encoding ở cấp ký tự. Ví dụ hữu ích để thấy văn bản phải trở thành số, nhưng ma trận one-hot dày tăng theo kích thước từ vựng và làm mất chuỗi token gốc nếu không lưu ánh xạ.",
+          "Biểu diễn ID token bằng tensor số nguyên và giữ từ vựng có thứ tự để mã hóa, giải mã. Chuỗi có độ dài biến đổi cần chính sách ghép batch như padding kèm mask; âm thầm cắt mỗi phần tử theo độ dài ngắn nhất sẽ làm thay đổi dữ liệu."
+        ],
+        "code": {
+          "title": "Xây dựng từ vựng ký tự có thể đảo ngược"
+        },
+        "callouts": [
+          {
+            "title": "ID không phải đại lượng đo",
+            "body": "Token ID 20 không lớn gấp đôi token ID 10. Tầng embedding sẽ học một cách biểu diễn liên tục hữu ích về sau."
+          }
+        ]
+      },
+      {
+        "id": "audio-video",
+        "title": "Làm rõ quy ước thời gian và kênh trong âm thanh, video",
+        "summary": "Bộ giải mã cung cấp mẫu hoặc frame; tiền xử lý xác định thứ tự kênh, thang đo, tốc độ và batch kích thước cố định.",
+        "body": [
+          "Âm thanh có thể được biểu diễn dưới dạng waveform kênh × mẫu hoặc đặc trưng thời gian-tần số. Ghi lại sample rate vì cùng độ dài tensor biểu diễn các khoảng thời gian khác nhau ở những tốc độ khác nhau. Khi đổi stereo sang mono, hãy nêu rõ các kênh được lấy trung bình hay chọn riêng.",
+          "Video thường thêm trục thời gian vào tensor ảnh. Giải mã một số frame có giới hạn, sắp xếp chúng nhất quán và ghi frame rate. Clip lớn nên được nạp lazy qua Dataset thay vì hiện thực hóa thành một tensor khổng lồ."
+        ],
+        "code": {
+          "title": "Xác minh hợp đồng tensor theo thời gian"
+        },
+        "callouts": [
+          {
+            "title": "Lựa chọn bộ giải mã là một ranh giới phụ thuộc",
+            "body": "Sách dùng imageio và SciPy cho một số định dạng media. Hãy cô lập các lời gọi đó để hợp đồng tensor vẫn tồn tại khi thay bộ giải mã trong tương lai."
+          }
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Transform thị giác",
+        "book": "Ví dụ ảnh giải mã qua imageio và sắp xếp lại mảng NumPy thủ công.",
+        "current": "Dùng TorchVision transforms v2 cho luồng ảnh cốt lõi",
+        "reason": "Pipeline v2 hiện tại làm rõ chuyển đổi ảnh, chuyển dtype có co giãn, chuẩn hóa và transform thị giác nhiều đầu vào, trong khi vẫn nhận tensor."
+      },
+      {
+        "topic": "Ranh giới dữ liệu",
+        "book": "Nhiều ví dụ thực hiện giải mã tệp và chuẩn bị tensor trong các ô notebook liền nhau.",
+        "current": "Tách bộ giải mã khỏi bộ tiền xử lý tensor thuần",
+        "reason": "Ranh giới nhỏ, có kiểu giúp kiểm thử bố cục, cho phép thay định dạng chuyên biệt và chuẩn bị mã cho Dataset cùng DataLoader ở Chương 7."
+      },
+      {
+        "topic": "Dùng chung bộ nhớ",
+        "book": "Mảng NumPy thường được chuyển bằng torch.from_numpy.",
+        "current": "Ghi rõ storage CPU dùng chung và clone khi cần quyền sở hữu độc lập",
+        "reason": "Chuyển đổi zero-copy có thể hiệu quả, nhưng thay đổi NumPy hoặc tensor về sau có thể âm thầm ảnh hưởng biểu diễn còn lại."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch4--1_image_dog",
+        "reason": "Lần theo giải mã ảnh, sắp xếp lại kênh, ghép batch, ép kiểu và chuẩn hóa theo kênh."
+      },
+      {
+        "slug": "p1ch4--2_volumetric_ct",
+        "reason": "Nghiên cứu thể tích y khoa có chiều sâu, đồng thời bảo toàn metadata hình học ngoài tensor."
+      },
+      {
+        "slug": "p1ch4--3_tabular_wine",
+        "reason": "Tách đặc trưng và mục tiêu, mã hóa danh mục và khớp thống kê đặc trưng liên tục trên dữ liệu huấn luyện."
+      },
+      {
+        "slug": "p1ch4--4_time_series_bikes",
+        "reason": "Xác minh cách các hàng theo giờ trở thành mẫu theo ngày và vì sao cách chia theo thời gian quan trọng."
+      },
+      {
+        "slug": "p1ch4--5_text_jane_austen",
+        "reason": "So sánh one-hot encoding ký tự với từ vựng ID số nguyên có thể đảo ngược."
+      },
+      {
+        "slug": "p1ch4--x_audio_chirp",
+        "reason": "Theo dõi sample rate, bố cục kênh, thang waveform và bước chuyển sang biểu diễn thời gian-tần số."
+      },
+      {
+        "slug": "p1ch4--x_video_cockatoo",
+        "reason": "Lần theo việc giải mã frame thành hợp đồng clip thời gian/kênh/chiều cao/chiều rộng tường minh."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Viết thẻ mô tả dạng dữ liệu",
+        "prompt": "Chọn một dạng dữ liệu thượng nguồn và ghi lại trục, dtype, miền giá trị, đơn vị, mục tiêu, quy tắc dữ liệu thiếu, bộ giải mã và nguồn chuẩn hóa của một mẫu. Thêm assertion để thực thi thẻ này.",
+        "success": "shape, dtype sai hoặc giá trị không hữu hạn tạo lỗi rõ ràng trước khi gọi mô hình"
+      },
+      {
+        "title": "Tách giải mã khỏi chuẩn bị",
+        "prompt": "Tái cấu trúc một luồng notebook thành decode(path) và prepare(tensor, metadata). Kiểm thử prepare() bằng tensor tổng hợp mà không chạm hệ thống tệp.",
+        "success": "kiểm thử chuẩn bị thuần xác minh hợp đồng cuối và có thể thay bộ giải mã mà không thay đổi nó"
+      },
+      {
+        "title": "Ghép batch dữ liệu có độ dài biến đổi",
+        "prompt": "Tạo ba mẫu văn bản hoặc âm thanh không bằng nhau và viết hàm collate để padding chúng, đồng thời trả về độ dài gốc hoặc mask.",
+        "success": "batch bảo toàn mọi mẫu gốc, nhận diện được vị trí padding và không có cắt ngầm"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu giảng dạy",
+        "title": "Học PyTorch cho Học sâu"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Hướng dẫn về tensor"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Transform của TorchVision"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Giải mã và mã hóa ảnh bằng TorchVision"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Viết dataset và transform tùy chỉnh"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.utils.data"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch4--1_image_dog",
+      "title": "Ảnh chó",
+      "summary": "Thực hành ví dụ ảnh chó và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Ảnh chó. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện",
+            "shape tensor"
+          ],
+          "explanation": "Ô 2 nạp các thư viện cần thiết. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Ảnh chó. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--2_volumetric_ct",
+      "title": "CT thể tích",
+      "summary": "Thực hành ví dụ CT thể tích và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của CT thể tích. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện",
+            "shape tensor"
+          ],
+          "explanation": "Ô 2 nạp các thư viện cần thiết. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "import thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 4 nạp các thư viện cần thiết, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--3_tabular_wine",
+      "title": "Dữ liệu bảng về rượu vang",
+      "summary": "Thực hành ví dụ dữ liệu bảng về rượu vang và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "đánh giá"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi đánh giá kết quả."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Dữ liệu bảng về rượu vang. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor",
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 3 nạp hoặc sắp xếp dữ liệu. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "shape tensor",
+            "tách token"
+          ],
+          "explanation": "Ô 8 tách dữ liệu thành token. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 12 chuyển đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 13 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 15 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 16 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 17 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 18 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--4_time_series_bikes",
+      "title": "Chuỗi thời gian xe đạp",
+      "summary": "Thực hành ví dụ chuỗi thời gian xe đạp và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Chuỗi thời gian xe đạp. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "shape tensor",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 7 thực hiện phép tính attention. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 13 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 14 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--5_text_jane_austen",
+      "title": "Văn bản Jane Austen",
+      "summary": "Thực hành ví dụ văn bản Jane Austen và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Văn bản Jane Austen. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 2 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "Trừu tượng Python"
+          ],
+          "explanation": "Ô này định nghĩa `clean_words`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 8 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 9 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--x_audio_chirp",
+      "title": "Tín hiệu chirp âm thanh",
+      "summary": "Thực hành ví dụ tín hiệu chirp âm thanh và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tín hiệu chirp âm thanh. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tín hiệu chirp âm thanh. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "import thư viện",
+            "shape tensor"
+          ],
+          "explanation": "Ô 4 nạp các thư viện cần thiết. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 6 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch4--x_video_cockatoo",
+      "title": "Video vẹt mào",
+      "summary": "Thực hành ví dụ video vẹt mào và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Video vẹt mào. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Video vẹt mào. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 3 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 5 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        }
+      ]
+    }
+  ]
+}

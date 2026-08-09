@@ -1,0 +1,742 @@
+{
+  "chapter": {
+    "number": 10,
+    "title": "Khuếch tán và sinh ảnh",
+    "summary": "Theo dõi nhiễu ở chiều thuận, học quy trình ngược, xây dựng bộ khử nhiễu U-Net và transformer rồi lấy mẫu dữ liệu sinh."
+  },
+  "lesson": {
+    "chapter": 10,
+    "outcomes": [
+      "Triển khai lịch khuếch tán thuận và giải thích hệ số tín hiệu, nhiễu cùng timestep bằng hình dạng tensor.",
+      "Huấn luyện bộ khử nhiễu có điều kiện theo timestep bằng mục tiêu dự đoán nhiễu và lấy mẫu khi gradient đã tắt.",
+      "So sánh bộ khử nhiễu U-Net và Diffusion Transformer mà không nhầm lựa chọn kiến trúc với quy trình khuếch tán.",
+      "Đo việc lấy mẫu eager và compiled một cách công bằng, bao gồm khởi động biên dịch và kiểm tra chất lượng đầu ra."
+    ],
+    "sections": [
+      {
+        "id": "forward-process",
+        "title": "Biến dữ liệu sạch thành thí nghiệm nhiễu có kiểm soát",
+        "summary": "Khuếch tán thuận cung cấp cặp huấn luyện bằng cách kết hợp mẫu sạch với nhiễu Gaussian đã biết tại một timestep được lấy mẫu.",
+        "body": [
+          "Lịch beta xác định lượng nhiễu mới đi vào ở mỗi bước. Từ alpha_t = 1 - beta_t và tích lũy alpha_bar_t, có thể lấy mẫu trực tiếp mọi trạng thái nhiễu x_t từ x_0 mà không mô phỏng từng bước trước. Công thức trực tiếp đó giúp batch huấn luyện ngẫu nhiên trở nên thực tế.",
+          "Giữ tensor lịch ở một chiều và lấy hệ số cho từng phần tử batch. Định hình lại giá trị đã lấy thành [B, 1, ...] trước khi nhân với ảnh hoặc đám mây điểm để broadcasting diễn ra trên chiều đặc trưng thay vì giữa các mẫu."
+        ],
+        "points": [
+          "x_0 và nhiễu epsilon được lấy mẫu có cùng hình dạng, dtype và thiết bị.",
+          "Mỗi mẫu có thể dùng một timestep số nguyên khác nhau.",
+          "alpha_bar gần một bảo toàn tín hiệu; alpha_bar gần không chủ yếu còn nhiễu.",
+          "torch.Generator cố định làm trực quan hóa lịch có thể tái lập."
+        ],
+        "code": {
+          "title": "Lấy mẫu trực tiếp x_t"
+        },
+        "callouts": [
+          {
+            "title": "Kiểm thử các điểm đầu cuối",
+            "body": "Vẽ mẫu sạch cùng các timestep đầu, giữa và cuối. Tích lũy bị đảo hoặc thiếu căn bậc hai vẫn có thể tạo tensor trông hợp lý trong khi mô tả sai quy trình."
+          }
+        ]
+      },
+      {
+        "id": "time-conditioned-loss",
+        "title": "Dạy mô hình biết nhiễu nào đã được thêm",
+        "summary": "Bộ khử nhiễu nhận x_t và t, sau đó dự đoán đúng nhiễu đã dùng để tạo ví dụ huấn luyện.",
+        "body": [
+          "Timestep embedding hình sin biến thời gian vô hướng thành đặc trưng trải trên nhiều tần số. Projection được học đưa các đặc trưng đó vào từng block khử nhiễu, cho phép một mạng giải quyết nhiều mức nhiễu thay vì huấn luyện mô hình riêng cho mỗi bước.",
+          "Mục tiêu giảng dạy phổ biến là sai số bình phương trung bình giữa nhiễu dự đoán và nhiễu đã lấy mẫu. Lấy t đồng đều, tạo x_t và epsilon cùng nhau, dự đoán epsilon rồi lan truyền ngược hàm mất mát. Giữ nhiễu mục tiêu tách khỏi đồ thị ngay từ cách xây dựng; nó là dữ liệu được lấy mẫu, không phải kết quả có tham số. Tạo một GradScaler trước vòng lặp huấn luyện và tái sử dụng; tạo lại ở mỗi bước sẽ làm mất lịch sử tỷ lệ động."
+        ],
+        "code": {
+          "title": "Một bước dự đoán nhiễu"
+        },
+        "callouts": [
+          {
+            "title": "Dùng namespace AMP hiện tại",
+            "body": "Với huấn luyện float16, dùng torch.autocast và torch.amp.GradScaler. Các điểm vào torch.cuda.amp cũ đã bị ngừng khuyến nghị trong PyTorch hiện tại."
+          }
+        ]
+      },
+      {
+        "id": "unet-denoiser",
+        "title": "Dùng U-Net để trộn chi tiết cục bộ và ngữ cảnh toàn cục",
+        "summary": "Downsampling mở rộng trường tiếp nhận, kết nối tắt khôi phục chi tiết và đặc trưng thời gian điều kiện hóa mọi tỷ lệ.",
+        "body": [
+          "U-Net gọn xen kẽ các block tích chập với downsampling không gian, rồi upsample trong khi nối các đặc trưng encoder. Mỗi giai đoạn phải ghi lại số kênh và độ phân giải không gian. Lỗi nối tắt thường là lỗi padding hoặc stride, vì vậy hãy khẳng định hình dạng trước khi huấn luyện hàng giờ.",
+          "Lịch khuếch tán và hàm mất mát không phụ thuộc MNIST hay CIFAR-10. Tiến trình notebook chủ đích chuyển từ điểm sang ảnh: chỉ hình dạng x và kiến trúc bộ khử nhiễu thay đổi. Chuẩn hóa ảnh huấn luyện vào miền mà đầu ra cuối mong đợi và chỉ đảo phép biến đổi đó để hiển thị."
+        ],
+        "points": [
+          "Tích chập mong đợi [B, C, H, W].",
+          "Projection thời gian được định hình thành [B, C, 1, 1] trước phép cộng.",
+          "Tensor skip phải khớp các chiều không gian của decoder.",
+          "Chuyển đổi để hiển thị không thuộc đồ thị huấn luyện."
+        ],
+        "code": {
+          "title": "Khẳng định hợp đồng bộ khử nhiễu"
+        }
+      },
+      {
+        "id": "dit-denoiser",
+        "title": "Thay bộ khử nhiễu tích chập bằng token patch",
+        "summary": "DiT dự đoán nhiễu ảnh bằng các block Transformer trong khi phương trình khuếch tán thuận và ngược không đổi.",
+        "body": [
+          "Chia x_t thành patch, chiếu các patch vào độ rộng mô hình, kết hợp điều kiện timestep với biểu diễn token rồi xử lý chuỗi bằng attention và block feed-forward. Projection đầu ra khôi phục mỗi token thành pixel patch, còn phép unpatchify trả về layout ảnh ban đầu.",
+          "Notebook triển khai trực tiếp multi-head attention để làm rõ các thành phần. Giữ phiên bản đó cho bước suy ra, rồi định tuyến mã hiện tại qua scaled_dot_product_attention. Xác minh vòng patchify/unpatchify và so sánh đầu ra tùy chỉnh với SDPA trước khi đánh giá tốc độ."
+        ],
+        "code": {
+          "title": "Dùng SDPA trong layout head của DiT"
+        },
+        "callouts": [
+          {
+            "title": "Đừng sao chép mask của mô hình ngôn ngữ",
+            "body": "Token khuếch tán ảnh thường attention hai chiều. Causal masking từ Chương 9 sẽ che các patch ảnh phía sau một cách không cần thiết."
+          }
+        ]
+      },
+      {
+        "id": "reverse-sampling",
+        "title": "Lấy mẫu ngược như một quy trình số được đo",
+        "summary": "Khuếch tán ngược liên tục dự đoán nhiễu và cập nhật mẫu hiện tại từ timestep lớn nhất về không.",
+        "body": [
+          "Khởi tạo x_T từ nhiễu Gaussian, lặp timestep theo thứ tự ngược, dự đoán thành phần nhiễu, tính trung bình hậu nghiệm và thêm phương sai trừ bước cuối. Lỗi dấu, hệ số hoặc chỉ mục sẽ tích lũy qua mọi vòng lặp, vì vậy hãy kiểm tra trạng thái trung gian thay vì chỉ nhìn ảnh cuối.",
+          "Lấy mẫu không cần gradient. Đặt mô hình ở chế độ đánh giá và bọc vòng lặp bằng torch.inference_mode. Nhận generator và trả tensor trước bước trực quan hóa để kiểm thử tính đúng đắn có thể so sánh các lần chạy độc lập với thư viện vẽ. Generator được cung cấp phải nhắm cùng thiết bị với tensor ngẫu nhiên mà nó tạo."
+        ],
+        "code": {
+          "title": "Ranh giới lấy mẫu chỉ dành cho suy luận"
+        }
+      },
+      {
+        "id": "compile-and-evaluate",
+        "title": "Biên dịch vòng lặp nóng và giữ chất lượng trong phép đo",
+        "summary": "Khuếch tán lặp bộ khử nhiễu nhiều lần, là mục tiêu biên dịch tốt nhưng cũng khuếch đại lỗi số.",
+        "body": [
+          "Biên dịch bộ khử nhiễu thay vì vòng lấy mẫu Python, data loader hoặc mã vẽ. Chạy tham chiếu eager, biên dịch, thực hiện các lần khởi động, đồng bộ bộ tăng tốc quanh vùng đo và kiểm thử batch cùng độ phân giải đại diện. Ghi riêng độ trễ biên dịch lạnh với độ trễ ổn định.",
+          "Sampler nhanh hơn chỉ hữu ích nếu giữ được đầu ra chấp nhận được. Với tensor nhiễu ban đầu cố định, so sánh các dự đoán trung gian eager và compiled trong ngưỡng sai số. Sau đó đánh giá mẫu sinh bằng cùng lưới định tính hoặc chỉ số định lượng, đồng thời báo cáo bộ nhớ đỉnh bên cạnh độ trễ."
+        ],
+        "code": {
+          "title": "Tách thực thi lạnh và đã khởi động"
+        }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Attention",
+        "book": "Notebook DiT trực tiếp triển khai query, key, value, masking, softmax và projection.",
+        "current": "Dùng scaled_dot_product_attention sau khi suy ra phép toán",
+        "reason": "SDPA trao cho PyTorch quyền chọn kernel attention tối ưu và tích hợp với biên dịch. Attention của DiT là hai chiều, khác với attention nhân quả của ngôn ngữ."
+      },
+      {
+        "topic": "Độ chính xác hỗn hợp",
+        "book": "Các ví dụ nhỏ nhấn mạnh vòng lặp toàn độ chính xác dễ đọc.",
+        "current": "Dùng torch.autocast cùng torch.amp.GradScaler cho huấn luyện float16",
+        "reason": "Các điểm vào torch.amp là hiện tại, còn alias torch.cuda.amp đã bị ngừng khuyến nghị. Bài này chỉ bật AMP float16 trên CUDA và luôn so sánh hội tụ với đường cơ sở eager toàn độ chính xác."
+      },
+      {
+        "topic": "Hiệu năng suy luận",
+        "book": "Khuếch tán ngược gọi bộ khử nhiễu theo eager tại mỗi timestep.",
+        "current": "Biên dịch bộ khử nhiễu lặp lại và báo cáo độ trễ lạnh so với đã khởi động",
+        "reason": "torch.compile có thể hợp nhất phép toán và giảm overhead framework, nhưng không được che giấu việc biên dịch lần đầu và biên dịch lại do hình dạng."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p2ch10--motivator",
+        "reason": "Xem kết quả sinh mẫu cấp cao trước khi phân tích quy trình thuận và ngược."
+      },
+      {
+        "slug": "p2ch10--forward_diffusion",
+        "reason": "Trực quan hóa lịch beta và việc thêm nhiễu trực tiếp trước tiên trên một hình hai chiều dễ diễn giải."
+      },
+      {
+        "slug": "p2ch10--training",
+        "reason": "Huấn luyện bộ khử nhiễu điểm có điều kiện timestep và kiểm tra mục tiêu dự đoán nhiễu."
+      },
+      {
+        "slug": "p2ch10--unet",
+        "reason": "Xây dựng U-Net ảnh, theo dõi hình dạng skip và nối cùng tiện ích khuếch tán với CIFAR-10."
+      },
+      {
+        "slug": "p2ch10--mnist",
+        "reason": "Chạy quy trình huấn luyện và lấy mẫu ảnh đầu-cuối gọn."
+      },
+      {
+        "slug": "p2ch10--dit",
+        "reason": "So sánh khử nhiễu Transformer theo token patch với U-Net tích chập."
+      },
+      {
+        "slug": "p2ch10--vis",
+        "reason": "Kiểm tra mẫu đã lưu và tiện ích trình bày tách biệt với đồ thị huấn luyện."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Kiểm toán lịch nhiễu",
+        "prompt": "Triển khai hai lịch beta, vẽ beta cùng alpha tích lũy và hiển thị cùng mẫu sạch tại năm timestep tương ứng. Khẳng định mọi giá trị tích lũy nằm trong (0, 1] và không tăng.",
+        "success": "các khẳng định đạt và báo cáo trực quan giải thích cách hai lịch bảo toàn hoặc phá hủy tín hiệu khác nhau"
+      },
+      {
+        "title": "So sánh bộ khử nhiễu công bằng",
+        "prompt": "Cấu hình U-Net nhỏ và DiT cho cùng hình dạng ảnh cùng lịch. Báo cáo số tham số, mất mát một bước, độ trễ forward và bộ nhớ đỉnh trên cùng batch.",
+        "success": "cả hai mô hình trả nhiễu có hình dạng đầu vào và phép so sánh giữ cố định dữ liệu, cách lấy timestep, thiết bị và độ chính xác"
+      },
+      {
+        "title": "Đo lấy mẫu đã biên dịch",
+        "prompt": "Đo bộ khử nhiễu eager và compiled bên trong cùng sampler. Tách biên dịch lạnh, độ trễ p50 đã khởi động và bộ nhớ đỉnh, sau đó so sánh đầu ra từ nhiễu ban đầu giống hệt.",
+        "success": "báo cáo có thời gian đã đồng bộ, khởi động tường minh, ngưỡng tương đương eager và không đưa ra kết luận chỉ dựa trên tốc độ mà thiếu hỗ trợ"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu tham khảo giảng dạy",
+        "title": "Học Deep Learning với PyTorch"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Tăng tốc mô hình khuếch tán sinh"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.compile và pipeline khuếch tán"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Độ chính xác hỗn hợp tự động"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Scaled dot-product attention"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "torch.compile"
+      },
+      {
+        "type": "Bài báo nghiên cứu",
+        "title": "Mô hình xác suất khuếch tán khử nhiễu"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch10--dit",
+      "title": "DiT",
+      "summary": "Khám phá diffusion transformer như một backbone khử nhiễu thay thế.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "trực quan hóa",
+            "cơ chế attention",
+            "khuếch tán",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `MultiHeadAttention`, `FeedForward`, `TransformerBlock`, `DiTMNIST`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "khuếch tán"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--forward_diffusion",
+      "title": "Khuếch tán thuận",
+      "summary": "Áp dụng quy trình khuếch tán thuận dạng đóng để tăng dần nhiễu.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô này định nghĩa `points_from_img`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `plot_points`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 4 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `linear_beta_schedule`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "hình dạng tensor",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `diffuse_points`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "khuếch tán"
+          ],
+          "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "hình dạng tensor",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 9 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "khuếch tán"
+          ],
+          "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "khuếch tán",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `reshape_for_x`, `forward_diffusion_sample`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "hình dạng tensor",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 13 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--mnist",
+      "title": "MNIST",
+      "summary": "Áp dụng quy trình sinh mẫu của chương cho chữ số viết tay.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 1 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "hình dạng tensor",
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 2 nạp hoặc sắp xếp dữ liệu. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "tích chập",
+            "khuếch tán",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `Block`, `SimpleUnet`, `train`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 5 cập nhật các tham số đã học."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "nhập thư viện",
+            "tiền xử lý",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `show_tensor_image`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "trực quan hóa",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `sample_plot_image`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--motivator",
+      "title": "Trực giác",
+      "summary": "Xây dựng trực giác trực quan về lý do mô hình khuếch tán học cách đảo ngược nhiễu.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "mô hình huấn luyện sẵn",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 1 xây dựng mô hình."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "mô hình huấn luyện sẵn"
+          ],
+          "explanation": "Ô 3 xây dựng mô hình."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nhập thư viện",
+            "khuếch tán",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--training",
+      "title": "Huấn luyện",
+      "summary": "Huấn luyện bộ khử nhiễu dự đoán nhiễu được thêm vào tại các timestep bất kỳ.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `SinusoidalEmbedding`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "định nghĩa mô hình",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `DenoisingModel`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `get_loss`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "hình dạng tensor",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `train`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 6 cập nhật các tham số đã học."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `sample_timestep`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "khuếch tán"
+          ],
+          "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--unet",
+      "title": "U-Net",
+      "summary": "Xây dựng kiến trúc khử nhiễu U-Net với các kết nối tắt.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập"
+          ],
+          "explanation": "Ô này định nghĩa `Block`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `SimpleUnet`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `show_images`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 6 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô này định nghĩa `load_transformed_dataset`, `show_tensor_image`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "trực quan hóa",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 8 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "trực quan hóa",
+            "khuếch tán"
+          ],
+          "explanation": "Ô này định nghĩa `sample_plot_image`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `get_or_load_model`, `train`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 11 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch10--vis",
+      "title": "Trực quan hóa",
+      "summary": "Kết xuất dữ liệu, lịch nhiễu, trạng thái trung gian hoặc mẫu của mô hình trong chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "tiền xử lý"
+          ],
+          "explanation": "Ô 1 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nhập thư viện",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 2 nạp hoặc sắp xếp dữ liệu, sau đó chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,625 @@
+{
+  "chapter": {
+    "number": 5,
+    "title": "Cơ chế của quá trình học",
+    "summary": "Suy ra ước lượng tham số, vi phân tự động và quá trình học do optimizer điều khiển từ các ví dụ nhỏ, dễ kiểm tra."
+  },
+  "lesson": {
+    "chapter": 5,
+    "outcomes": [
+      "Biểu đạt ước lượng tham số bằng mô hình, mất mát vô hướng, phép tính gradient và quy tắc cập nhật.",
+      "Giải thích autograd ghi lại gì và vì sao gradient tích lũy trên tensor lá.",
+      "Viết vòng lặp optimizer đúng và vòng lặp validation không gradient.",
+      "Chẩn đoán quá trình học không ổn định bằng cách kiểm tra thang đo, learning rate, lịch sử mất mát và gradient hữu hạn."
+    ],
+    "sections": [
+      {
+        "id": "parameter-estimation",
+        "title": "Bắt đầu bằng mô hình có thể kiểm tra",
+        "summary": "Phép đổi nhiệt độ hai tham số làm lộ rõ mọi thành phần chuyển động của quá trình học.",
+        "body": [
+          "Ví dụ nhiệt độ trong chương dự đoán mục tiêu đã biết từ phép đo quan sát bằng một tham số tỷ lệ và một bias. Các giá trị ban đầu sai, nhưng mô hình khả vi: thay đổi nhỏ ở một trong hai tham số tạo ra thay đổi đo được trong dự đoán và mất mát.",
+          "Mô hình đơn giản không phải đồ chơi nên bỏ qua. Nó cho phép xác minh bề mặt mất mát, dấu gradient, hướng cập nhật và thang đơn vị trước khi các tầng mạng nơ-ron che khuất chi tiết bằng hàng nghìn tham số."
+        ],
+        "code": {
+          "title": "Mô hình và sai số bình phương trung bình"
+        },
+        "points": [
+          "Mô hình ánh xạ quan sát thành dự đoán.",
+          "Hàm mất mát rút gọn mọi sai số dự đoán thành một mục tiêu tối ưu hóa.",
+          "Tham số là các giá trị mà quy tắc cập nhật được phép thay đổi.",
+          "Tập dữ liệu và mục tiêu xác định thế nào là một tham số tốt."
+        ]
+      },
+      {
+        "id": "scale-gradients",
+        "title": "Quan sát cách thang đo chi phối tối ưu hóa",
+        "summary": "Gradient đúng về toán học vẫn có thể tạo cập nhật không dùng được khi đặc trưng hoặc learning rate có thang không phù hợp.",
+        "body": [
+          "Đạo hàm theo một tham số chứa độ lớn đầu vào của nó. Nếu quan sát nhiệt độ có giá trị hàng chục còn đầu vào bias thực chất là một, gradient tỷ lệ có thể lớn hơn nhiều so với gradient bias. Một learning rate dùng chung khi đó có thể vượt quá mức.",
+          "Chuẩn hóa đầu vào bằng thống kê khớp trên dữ liệu huấn luyện hoặc chủ động chọn tối ưu hóa riêng theo tham số. Luôn kiểm tra mất mát và gradient hữu hạn khi huấn luyện phân kỳ; chỉ giảm learning rate mà không hiểu thang đo có thể che giấu nguyên nhân gốc."
+        ],
+        "code": {
+          "title": "Chuẩn hóa một đặc trưng"
+        },
+        "callouts": [
+          {
+            "title": "Khớp thống kê trước khi đánh giá",
+            "body": "Chỉ dùng tập huấn luyện để tính trung bình và độ lệch chuẩn. Dữ liệu đánh giá không được ảnh hưởng cách biểu diễn đã học."
+          }
+        ]
+      },
+      {
+        "id": "autograd-graph",
+        "title": "Để autograd áp dụng quy tắc dây chuyền",
+        "summary": "Các phép toán liên quan đến đầu vào yêu cầu gradient tạo đồ thị mà backward đi ngược từ mất mát về các lá.",
+        "body": [
+          "Autograd ghi lại phép toán trong lượt truyền xuôi khi có ít nhất một đầu vào cần gradient tham gia. Tensor kết quả trỏ đến hàm gradient, còn tham số do người dùng tạo thường là lá. Gọi backward() trên mất mát vô hướng truyền đạo hàm qua đồ thị và tích lũy chúng trong trường .grad của các lá đủ điều kiện.",
+          "Đồ thị được xây lại trong mỗi lượt truyền xuôi thông thường, vì vậy luồng điều khiển Python có thể thay đổi giữa các vòng lặp. Không detach một giá trị trung gian mà hàm mất mát cần lấy đạo hàm qua nó."
+        ],
+        "code": {
+          "title": "Kiểm tra gradient của tensor lá"
+        },
+        "callouts": [
+          {
+            "title": "Backward có tính tích lũy",
+            "body": "Sau một lượt truyền xuôi mới, gọi backward mà không xóa sẽ cộng vào gradient lá hiện có. Gọi backward hai lần trên cùng đồ thị cần retain_graph=True và thường không cần thiết; bước optimizer thông thường nên xóa gradient trước đó."
+          }
+        ]
+      },
+      {
+        "id": "optimizer-loop",
+        "title": "Dùng trình tự optimizer chuẩn",
+        "summary": "Xóa, dự đoán, đo, vi phân và cập nhật theo một thứ tự ổn định, dễ thấy.",
+        "body": [
+          "Optimizer giữ tham chiếu đến các tham số và áp dụng quy tắc cập nhật bằng gradient của chúng. Nó không tính mất mát hay gọi backward. Giữ rõ các trách nhiệm này giúp vòng lặp dễ gỡ lỗi và khái quát được sang mạng nơ-ron.",
+          "Optimizer.zero_grad(set_to_none=True) xóa gradient cũ bằng cách đặt trường của chúng thành None. Đây là mặc định hiện tại và có thể tránh các lượt ghi không cần thiết. Nó cũng giúp phân biệt tham số không nhận gradient với tham số có gradient bằng không về số học."
+        ],
+        "code": {
+          "title": "Vòng lặp optimizer hoàn chỉnh"
+        },
+        "callouts": [
+          {
+            "title": "Không cập nhật qua .data",
+            "body": "Dùng optimizer hoặc khối no-grad cho cập nhật thủ công có chủ đích. .data có thể thay đổi giá trị mà không qua các kiểm tra tính đúng thông thường của autograd."
+          }
+        ]
+      },
+      {
+        "id": "validation",
+        "title": "Đo khả năng khái quát trên một luồng riêng",
+        "summary": "Validation dùng tham số cố định và không có optimizer, nên không cần ghi gradient.",
+        "body": [
+          "Mất mát huấn luyện giảm chỉ chứng minh optimizer khớp các ví dụ nó nhìn thấy. Tách mẫu validation trước khi khớp thống kê tiền xử lý, rồi báo cáo mất mát validation theo khoảng phù hợp. Luồng validation không được gọi backward hay optimizer.step.",
+          "Với module, ghép model.eval() với torch.inference_mode(). Hàm nhiệt độ không có trạng thái train/eval, nhưng inference mode vẫn truyền đạt rằng kết quả sẽ không tham gia học."
+        ],
+        "code": {
+          "title": "Validation không gradient"
+        },
+        "points": [
+          "Chia tập trước khi tính thống kê chuẩn hóa.",
+          "Không liên tục chọn kết quả cuối từ dữ liệu test.",
+          "Ghi cả đường cong huấn luyện và validation.",
+          "Sao chép hoặc tuần tự hóa trạng thái tốt nhất thay vì giữ một tham chiếu có thể thay đổi."
+        ]
+      },
+      {
+        "id": "debugging-learning",
+        "title": "Gỡ lỗi quá trình học bằng bằng chứng",
+        "summary": "Đường cong mất mát, kiểm tra hữu hạn, chuẩn gradient và phép thử overfit nhỏ cho thấy các nhóm lỗi khác nhau.",
+        "body": [
+          "Mất mát phẳng có thể do tham số bị ngắt kết nối, learning rate quá nhỏ, phép toán bão hòa hoặc đầu vào hằng. Mất mát bùng nổ hay NaN có thể liên quan đến thang đo, phép chia, logarithm không hợp lệ hoặc learning rate quá lớn. Hãy in gradient đại diện thay vì đoán.",
+          "Một phép thử pipeline mạnh là overfit một batch rất nhỏ. Nếu mô hình đủ năng lực không thể kéo mất mát huấn luyện nhỏ đó xuống, hãy kiểm tra cặp dữ liệu-mục tiêu, luồng truyền xuôi, giả định của hàm mất mát, sự hiện diện của gradient và việc thực thi cập nhật trước khi chạy thử nghiệm dài."
+        ],
+        "code": {
+          "title": "Dừng sớm khi trạng thái huấn luyện không hợp lệ"
+        }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Xóa gradient",
+        "book": "Các notebook optimizer gọi zero_grad() trước mỗi lượt backward.",
+        "current": "Dùng optimizer.zero_grad(set_to_none=True)",
+        "reason": "Đặt gradient thành None là mặc định hiện tại, giảm lượt ghi bộ nhớ và phân biệt gradient bị thiếu với gradient bằng không đã được tính."
+      },
+      {
+        "topic": "Đánh giá",
+        "book": "Phép tính validation nhỏ có thể chạy như biểu thức tensor thông thường.",
+        "current": "Dùng inference_mode() cho validation và eval() khi module có hành vi phụ thuộc huấn luyện",
+        "reason": "Luồng đánh giá tường minh tránh ghi đồ thị truyền ngược không cần thiết và ngăn dropout hoặc batch normalization hành xử như đang huấn luyện."
+      },
+      {
+        "topic": "Độ chính xác hỗn hợp",
+        "book": "Chương tập trung vào tối ưu hóa float32 minh bạch.",
+        "current": "Giữ float32 làm mốc giảng dạy và chỉ giới thiệu torch.amp như một mở rộng đã đo lường",
+        "reason": "Autocast và gradient scaling có thể tăng tốc trên phần cứng được hỗ trợ, nhưng chỉ nên đến sau một mốc đúng và đã kiểm tra số học."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p1ch5--1_parameter_estimation",
+        "reason": "Dùng mô hình hai tham số nhìn thấy được để nối bề mặt mất mát với hướng cập nhật và thang đầu vào."
+      },
+      {
+        "slug": "p1ch5--2_autograd",
+        "reason": "Kiểm tra requires_grad, grad_fn, gradient lá, backward và tác động của tích lũy lặp lại."
+      },
+      {
+        "slug": "p1ch5--3_optimizers",
+        "reason": "Thay cập nhật thủ công bằng optimizer và thêm cách chia train/validation sạch."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "So sánh ba đường tính gradient",
+        "prompt": "Tính gradient tỷ lệ và bias bằng sai phân hữu hạn, biểu thức giải tích và autograd tại cùng giá trị tham số. Báo cáo chênh lệch tuyệt đối.",
+        "success": "cả ba phương pháp khớp nhau trong dung sai đã nêu và epsilon sai phân hữu hạn được giải thích"
+      },
+      {
+        "title": "Làm lộ sự tích lũy gradient",
+        "prompt": "Tính lượt truyền xuôi và gọi backward, sau đó tính lại cùng lượt truyền xuôi và mất mát rồi gọi backward lần nữa mà không xóa gradient. Ghi .grad sau mỗi lần gọi, rồi lặp lại với zero_grad(set_to_none=True). Giải thích vì sao tái sử dụng đúng cùng đồ thị sẽ cần retain_graph=True.",
+        "success": "gradient chưa xóa tăng gấp đôi sau phép tính giống hệt được tính lại, luồng đã xóa bắt đầu từ None và việc tái sử dụng đồ thị được phân biệt với tích lũy gradient"
+      },
+      {
+        "title": "Xây dựng vòng lặp huấn luyện đã rà soát",
+        "prompt": "Huấn luyện trên một tập, validation dưới inference_mode(), ghi cả hai mất mát, từ chối giá trị không hữu hạn và lưu bản sao của tham số tốt nhất.",
+        "success": "tham số tốt nhất đã lưu tái tạo được mất mát validation thấp nhất mà không có cập nhật validation"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu giảng dạy",
+        "title": "Học PyTorch cho Học sâu"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Cơ chế autograd"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Tensor.backward"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Tắt cục bộ phép tính gradient"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Tối ưu hóa tham số mô hình"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Optimizer.zero_grad"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Độ chính xác hỗn hợp tự động"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p1ch5--1_parameter_estimation",
+      "title": "Ước lượng tham số",
+      "summary": "Khớp một mô hình vật lý đơn giản và kiểm tra cách mất mát thay đổi theo các tham số.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `model`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `loss_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 5 đưa dữ liệu qua mô hình."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô 6 đo sai số dự đoán."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 7 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát"
+          ],
+          "explanation": "Ô 8 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô 9 đo sai số dự đoán."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát"
+          ],
+          "explanation": "Ô 10 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "shape tensor",
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `dloss_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "Trừu tượng Python"
+          ],
+          "explanation": "Ô này định nghĩa `dmodel_dw`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "Trừu tượng Python"
+          ],
+          "explanation": "Ô này định nghĩa `dmodel_db`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `grad_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 17 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 18 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 19,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 19 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 20,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 20 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 21,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 21 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 22,
+          "concepts": [
+            "import thư viện",
+            "lượt truyền xuôi",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 22 nạp các thư viện cần thiết, rồi đưa dữ liệu qua mô hình, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 23,
+          "concepts": [
+            "import thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 23 nạp các thư viện cần thiết, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 24,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch5--2_autograd",
+      "title": "Autograd",
+      "summary": "Để PyTorch theo dõi phép toán và tự động tính đạo hàm.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `model`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `loss_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 5 tính gradient bằng vi phân tự động."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 6 tính gradient bằng vi phân tự động."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 7 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán, rồi tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 8 tính gradient bằng vi phân tự động."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 10 tính gradient bằng vi phân tự động."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thử nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p1ch5--3_optimizers",
+      "title": "Trình tối ưu hóa",
+      "summary": "Thay cập nhật tham số thủ công bằng đối tượng optimizer và một vòng lặp huấn luyện tái sử dụng.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "import thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 1 nạp các thư viện cần thiết, rồi trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 2 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô này định nghĩa `model`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `loss_fn`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "import thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Trình tối ưu hóa. Gom các lệnh import lại giúp những ô sau tập trung vào chính thử nghiệm."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 6 tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 7 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán, rồi tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 8 đưa dữ liệu qua mô hình, rồi đo sai số dự đoán, rồi tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 10 tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 11 tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "shape tensor"
+          ],
+          "explanation": "Ô 12 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo. Hãy theo dõi các shape được in ra hoặc ngầm định; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "Thử nghiệm Python"
+          ],
+          "explanation": "Ô 13 tiếp tục thử nghiệm bằng cách tính hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô 15 tính gradient bằng vi phân tự động, rồi cập nhật các tham số có thể học."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `training_loop`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "lượt truyền xuôi",
+            "mất mát"
+          ],
+          "explanation": "Ô này định nghĩa `calc_forward`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai."
+        }
+      ]
+    }
+  ]
+}

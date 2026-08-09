@@ -1,0 +1,144 @@
+{
+  "chapter": {
+    "number": 1,
+    "title": "Giới thiệu về học sâu và PyTorch",
+    "summary": "Định hướng ban đầu: học sâu thay đổi điều gì, vì sao PyTorch là lựa chọn thực tiễn và cách notebook hỗ trợ quy trình thử nghiệm."
+  },
+  "lesson": {
+    "chapter": 1,
+    "outcomes": [
+      "Mô tả một thử nghiệm học sâu như sự phối hợp giữa dữ liệu, mô hình, hàm mất mát, gradient và trình tối ưu hóa.",
+      "Kiểm tra môi trường PyTorch 2.13 và chọn bộ tăng tốc khả dụng mà không mặc định rằng CUDA luôn có mặt.",
+      "Chạy các ô notebook theo thứ tự đáng tin cậy và nhận biết khi trạng thái ẩn làm kết quả trở nên sai lệch.",
+      "Đọc một bước huấn luyện nhỏ và xác định nơi diễn ra dự đoán, đo sai số, vi phân và cập nhật tham số."
+    ],
+    "sections": [
+      {
+        "id": "learning-system",
+        "title": "Trước tiên, hãy nhìn toàn bộ hệ thống học",
+        "summary": "Học sâu là một vòng phản hồi, không phải một tập hợp tầng khó hiểu.",
+        "body": [
+          "Mô hình nhận dữ liệu số và tạo ra dự đoán. Hàm mất mát biến khoảng cách giữa dự đoán đó với mục tiêu mong muốn thành một số vô hướng. Vi phân tự động tính mức đóng góp của từng tham số có thể học vào số vô hướng ấy, còn trình tối ưu hóa thực hiện một cập nhật hiệu chỉnh nhỏ.",
+          "Mỗi chương sau sẽ mở rộng một phần của vòng lặp này. Tensor biểu diễn dữ liệu, module biểu đạt mô hình, autograd cung cấp gradient và trình tối ưu hóa áp dụng cập nhật. Luôn hình dung toàn bộ vòng lặp sẽ giúp bạn đặt từng API vào đúng ngữ cảnh."
+        ],
+        "points": [
+          "Dữ liệu có shape, dtype, device và ý nghĩa.",
+          "Mô hình ánh xạ đầu vào thành dự đoán thông qua các phép toán có tham số.",
+          "Hàm mất mát giúp đo được chất lượng dự đoán.",
+          "Gradient chỉ hướng thay đổi tham số; trình tối ưu hóa quyết định bước cập nhật."
+        ],
+        "code": { "title": "Quy trình gồm năm phần" },
+        "callouts": [
+          {
+            "title": "Đọc hiểu trước khi tối ưu hóa",
+            "body": "Mục đích của phần xem trước này là nhận diện các giai đoạn. Chương 5 giải thích vì sao gradient và bước cập nhật thực sự làm giảm mất mát."
+          }
+        ]
+      },
+      {
+        "id": "eager-workflow",
+        "title": "Dùng thực thi eager như kính hiển vi",
+        "summary": "Luồng điều khiển Python thông thường giúp bạn quan sát tensor trung gian trong lúc học.",
+        "body": [
+          "PyTorch thực thi phép toán tensor khi Python đi đến phép toán đó. Bạn có thể dừng sau bất kỳ dòng nào, in một giá trị, kiểm tra shape hoặc thay một phép toán rồi thấy kết quả ngay. Vòng lặp thử nghiệm ngắn này là một trong những ưu điểm giảng dạy lớn nhất của framework.",
+          "PyTorch 2.13 có thể biên dịch mô hình để tăng hiệu năng, nhưng biên dịch không phải điều kiện để có kết quả đúng. Trước hết hãy thiết lập một mốc eager hoạt động tốt. Sau đó mới so sánh bản đã biên dịch trên cùng đầu vào, đầu ra và phép đo."
+        ],
+        "code": { "title": "Kiểm tra từng phép toán" },
+        "callouts": [
+          {
+            "title": "Bước tùy chọn về sau",
+            "body": "Chỉ nên dùng torch.compile() sau khi đã có kiểm thử và benchmark đại diện. Chế độ eager vẫn là mốc gỡ lỗi rõ ràng nhất."
+          }
+        ]
+      },
+      {
+        "id": "environment-check",
+        "title": "Kiểm tra môi trường rồi chọn device",
+        "summary": "Một phép thử nhanh trong hai phút có thể tránh nhiều giờ gỡ lỗi nhầm bản cài đặt hoặc giả định sai về bộ tăng tốc.",
+        "body": [
+          "Hãy in phiên bản đã cài, tạo một tensor và chạy một phép toán nhỏ trước khi tải dữ liệu hay mô hình. PyTorch ổn định hiện tại yêu cầu Python 3.10 trở lên. Lệnh cài đặt thay đổi theo hệ điều hành và nền tảng tính toán, vì vậy hãy dùng công cụ chọn chính thức thay vì sao chép lệnh từ notebook cũ.",
+          "PyTorch hiện đại cung cấp API bộ tăng tốc trung lập với backend. API này có thể đại diện cho CUDA, MPS, XPU và các bộ tăng tốc được hỗ trợ khác. Hãy chọn bộ tăng tốc được phát hiện khi nó thực sự khả dụng; nếu không, hãy dùng CPU."
+        ],
+        "code": { "title": "Phép thử nhanh cho PyTorch 2.13" },
+        "callouts": [
+          {
+            "title": "Không mã hóa cứng CUDA",
+            "body": "Nhánh chỉ dành cho CUDA sẽ bỏ qua Apple, Intel và các backend tăng tốc trong tương lai. Ví dụ trung lập với device cũng chạy được trên máy chỉ có CPU."
+          }
+        ]
+      },
+      {
+        "id": "notebook-discipline",
+        "title": "Xem notebook như một chương trình có trạng thái",
+        "summary": "Các ô thuận tiện cho thử nghiệm, nhưng thứ tự thực thi ẩn có thể tạo ra kết quả mà một lần chạy sạch không tái lập được.",
+        "body": [
+          "Kernel notebook ghi nhớ biến do mọi ô đã chạy tạo ra. Chạy ô 12 trước ô 8 có thể vẫn thành công chỉ vì một phiên bản cũ của biến còn trong bộ nhớ. Bộ đếm thực thi hữu ích, nhưng phép kiểm tra quyết định là khởi động lại kernel và chạy notebook từ trên xuống dưới.",
+          "Hãy sắp xếp phần thiết lập, import, cấu hình, chuẩn bị dữ liệu, định nghĩa mô hình, huấn luyện và đánh giá theo thứ tự dễ đọc. Khi một thử nghiệm quan trọng, hãy ghi lại seed, phiên bản thư viện, device và các siêu tham số chính bên cạnh kết quả."
+        ],
+        "points": [
+          "Khởi động lại và chạy tất cả trước khi tin vào kết quả notebook.",
+          "Mỗi ô chỉ nên có một mục đích và tránh định nghĩa lại cùng một tên ở những vị trí cách xa nhau.",
+          "Đưa logic lặp lại vào hàm để đầu vào và đầu ra trở nên tường minh.",
+          "Lưu trạng thái đã học riêng với trạng thái notebook tạm thời."
+        ],
+        "code": { "title": "Phần đầu thử nghiệm gọn nhẹ" }
+      },
+      {
+        "id": "reading-code",
+        "title": "Đọc mã PyTorch qua bốn hợp đồng",
+        "summary": "Phần lớn lỗi khó hiểu trở nên bình thường khi bạn theo dõi shape, dtype, device và chủ đích gradient.",
+        "body": [
+          "Với mỗi tensor quan trọng, hãy hỏi bốn câu: mỗi trục có ý nghĩa gì, tensor dùng kiểu số nào, được lưu ở đâu và autograd có nên theo dõi các phép toán trên nó không? Những hợp đồng này nối cú pháp mã với thử nghiệm bên dưới.",
+          "Lỗi shape thường xuất hiện ở phép nhân ma trận hoặc khi tính mất mát. Lỗi device xảy ra khi module và đầu vào nằm trên các backend khác nhau. Lỗi dtype phổ biến khi nhãn số nguyên và đặc trưng dấu phẩy động bị trộn sai. Lỗi gradient thường do tách tensor hoặc tắt theo dõi không đúng lúc."
+        ],
+        "code": { "title": "In hợp đồng tensor" }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Mốc phiên bản",
+        "book": "Các notebook của sách giữ nguyên API và giả định môi trường tại thời điểm xuất bản.",
+        "current": "Nhắm đến PyTorch 2.13 và Python 3.10+",
+        "reason": "Luôn dùng công cụ chọn cài đặt chính thức cho đúng tổ hợp hệ điều hành và bộ tăng tốc, thay vì dán một lệnh wheel cũ."
+      },
+      {
+        "topic": "Bộ tăng tốc",
+        "book": "Nhiều ví dụ chọn trực tiếp giữa CUDA và CPU.",
+        "current": "Dùng API torch.accelerator trung lập với backend",
+        "reason": "Lớp trừu tượng hiện tại có thể đại diện cho CUDA, MPS, XPU và các backend tăng tốc khác mà không coi thiết bị của một nhà cung cấp là mô hình chung duy nhất."
+      },
+      {
+        "topic": "Thực thi",
+        "book": "Thực thi notebook theo chế độ eager là con đường học và gỡ lỗi thông thường.",
+        "current": "Giữ eager làm mốc; chỉ thêm torch.compile khi phù hợp",
+        "reason": "Biên dịch có thể cải thiện hiệu năng nhưng cũng thêm tracing, guard và hành vi graph break. Kết quả eager đúng cùng benchmark đại diện phải có trước."
+      }
+    ],
+    "notebookLinks": [],
+    "exercises": [
+      {
+        "title": "Mô tả một tensor",
+        "prompt": "Tạo tensor dấu phẩy động 2 × 3. In shape, dtype, device, giá trị nhỏ nhất, lớn nhất và trung bình; sau đó giải thích mỗi giá trị cho biết gì về hợp đồng dữ liệu.",
+        "success": "metadata được báo cáo khớp với tensor và phần giải thích phân biệt metadata với giá trị dữ liệu"
+      },
+      {
+        "title": "Chọn bộ tăng tốc an toàn",
+        "prompt": "Viết get_device() bằng torch.accelerator, chuyển tensor đến device được trả về, thực hiện một phép toán rồi chuyển kết quả về CPU trước khi đổi sang NumPy.",
+        "success": "cùng một hàm chạy mà không cần sửa trên môi trường chỉ có CPU và trên một bộ tăng tốc được hỗ trợ đang khả dụng"
+      },
+      {
+        "title": "Chú thích vòng lặp học",
+        "prompt": "Chạy quy trình năm phần ở mục đầu. Thêm chú thích để xác định dữ liệu, mô hình, lượt truyền xuôi, mất mát, lượt truyền ngược và cập nhật; sau đó lặp bước đó mười lần và ghi xu hướng mất mát.",
+        "success": "mỗi giai đoạn được gắn nhãn đúng và mất mát cuối thấp hơn mất mát ban đầu"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "Tài liệu PyTorch 2.13" },
+      { "type": "PyTorch chính thức", "title": "Học các kiến thức cơ bản" },
+      { "type": "PyTorch chính thức", "title": "torch.accelerator" },
+      { "type": "PyTorch chính thức", "title": "Cài đặt PyTorch" }
+    ]
+  },
+  "notebooks": []
+}

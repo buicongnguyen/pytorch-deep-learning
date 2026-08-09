@@ -34,6 +34,22 @@ after its lesson passes schema, route, link, and production-build checks. That
 chapter is then committed, pushed to `main` over SSH, deployed with GitHub
 Pages, and verified before editorial work moves to the next chapter.
 
+## Bilingual and readability expansion
+
+English keeps every original URL. A complete Vietnamese edition is generated
+under `/vi/`, including the landing page, all 17 lessons, all 63 notebook
+readers, both search indexes, and all 810 cell explanations. Locale overlays
+translate learner-facing text while code, section IDs, notebook slugs, source
+URLs, and audited metadata remain canonical and shared.
+
+The bilingual release contract requires reciprocal language links, exact
+canonical and `hreflang` pairs, accent-insensitive Vietnamese search, 17
+complete Vietnamese chapter overlays, and zero fallback pages. The typography
+system also enforces practical readability floors: 12px labels, 13px metadata,
+14px navigation/code/supporting text, and 16px instructional prose. Desktop,
+390px mobile, and 320px narrow-mobile layouts must remain free of page-level
+horizontal overflow.
+
 ## Reviewed scope
 
 - Seventeen chapter routes, including context pages for chapters without a
@@ -43,6 +59,7 @@ Pages, and verified before editorial work moves to the next chapter.
 - Chapter summaries, notebook learning goals, source links, Colab links, code
   copying, search, dark/light themes, keyboard focus, and mobile navigation.
 - Deterministic build and coverage checks.
+- Parallel English and Vietnamese routes with equivalent anchors and search.
 - GitHub Actions deployment to Pages from `main`.
 
 ## Architecture
@@ -94,11 +111,15 @@ repository and enable Pages.
 
 - `npm run build` exits successfully.
 - The generated audit reports 17 chapters, 63 notebooks, and 810 code cells.
+- The generated audit reports two complete locales and 810 Vietnamese cell
+  explanations.
 - Root, chapter, notebook, 404, sitemap, robots, and `.nojekyll` files exist.
 - Every notebook points to the pinned upstream commit.
 - Every reviewed lesson has learning outcomes, substantive sections, current
   API notes, exercises, a LearnPyTorch credit, and official PyTorch references.
 - `content/course.json` and the lesson file set match exactly.
 - No generated page contains notebook output payloads.
+- Every localized route has exact canonical/alternate metadata and every
+  internal link and fragment resolves.
 - The repository is committed, pushed through an SSH `origin`, and the Pages
   deployment reports success.

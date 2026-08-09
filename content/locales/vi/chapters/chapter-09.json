@@ -1,0 +1,837 @@
+{
+  "chapter": {
+    "number": 9,
+    "title": "Mô hình ngôn ngữ và transformer",
+    "summary": "Khám phá tokenization, attention, vision transformer và cách sinh tên tự hồi quy."
+  },
+  "lesson": {
+    "chapter": 9,
+    "outcomes": [
+      "Chuyển văn bản thô thành ID token, batch có padding, embedding và mục tiêu token kế tiếp với hợp đồng hình dạng tường minh.",
+      "Suy ra causal scaled dot-product attention và xác minh triển khai viết tay với SDPA của PyTorch 2.13.",
+      "Lắp ghép một Transformer tự hồi quy nhỏ, huấn luyện và sinh mẫu mà không làm rò rỉ token tương lai.",
+      "Giải thích cách Vision Transformer biến các patch ảnh thành chuỗi token và dùng API weight hiện tại của TorchVision."
+    ],
+    "sections": [
+      {
+        "id": "tokens-and-targets",
+        "title": "Biến chuỗi thành số mà không làm mất ý nghĩa",
+        "summary": "Mô hình ngôn ngữ nhìn thấy ID token số nguyên, nhưng triển khai tốt vẫn làm rõ từ vựng, padding và độ dịch mục tiêu.",
+        "body": [
+          "Bắt đầu với ký tự vì mọi phép biến đổi đều có thể kiểm tra. Dành các ID riêng cho padding và biên chuỗi, mã hóa từng tên rồi tạo mục tiêu bằng cách dịch chuỗi sang trái một vị trí. Đầu vào mô hình tại vị trí t chỉ được chứa thông tin có sẵn đến t, còn nhãn yêu cầu vị trí t + 1.",
+          "Các ví dụ dài ngắn khác nhau có thể được padding thành batch hình chữ nhật. Padding là cách lưu trữ, không phải ngôn ngữ: đặt padding_idx cho nn.Embedding và cho hàm mất mát biết giá trị mục tiêu nào cần bỏ qua. Hãy giải mã và in một batch trước khi huấn luyện để lỗi lệch một vị trí không thể ẩn sau hàm mất mát đang giảm."
+        ],
+        "points": [
+          "ID token là chỉ mục phân loại nên dùng torch.long.",
+          "Tensor token có batch ở đầu thường mang hình dạng [batch, sequence].",
+          "Logits dự đoán token kế tiếp mang hình dạng [batch, sequence, vocabulary].",
+          "Padding phải được loại trừ nhất quán khỏi phép tính attention và hàm mất mát."
+        ],
+        "code": {
+          "title": "Padding đầu vào và nhãn một cách có chủ đích"
+        },
+        "callouts": [
+          {
+            "title": "Đừng dùng lại một sentinel một cách mù quáng",
+            "body": "padding_idx của Embedding phải là chỉ mục từ vựng hợp lệ, còn ignore_index của CrossEntropyLoss có thể nằm ngoài từ vựng. Hãy giữ hai vai trò tường minh."
+          }
+        ]
+      },
+      {
+        "id": "embeddings-and-baselines",
+        "title": "Xây dựng đường cơ sở trước attention",
+        "summary": "Mô hình bigram và sequence-MLP cho thấy ngữ cảnh đóng góp gì trước khi Transformer bổ sung định tuyến linh hoạt.",
+        "body": [
+          "Bảng bigram ước lượng token kế tiếp chỉ từ token hiện tại. Đường cơ sở embedding cộng MLP có thể làm phẳng một cửa sổ ngữ cảnh cố định và học tương tác giữa các vị trí, nhưng tham số của nó bị gắn với layout cửa sổ đó. Cả hai đều là đối chứng giá trị: chúng cho biết pipeline dữ liệu và vòng sinh có hoạt động trước khi đưa attention vào hay không.",
+          "Huấn luyện từ logits chưa chuẩn hóa bằng cross-entropy. Khi sinh, chỉ áp dụng softmax lúc chuyển logits thành xác suất, lấy mẫu bằng torch.multinomial, nối token đã lấy rồi dừng tại EOS hoặc độ dài tối đa. Cố định torch.Generator khi so sánh mô hình để nhiễu lấy mẫu không giả dạng thành cải thiện mô hình."
+        ],
+        "code": {
+          "title": "Giữ logits thô trong huấn luyện"
+        },
+        "callouts": [
+          {
+            "title": "Cross-entropy đã chứa log-softmax",
+            "body": "Truyền xác suất thay cho logits làm thay đổi mục tiêu và thường làm gradient yếu đi. Chỉ áp dụng softmax để diễn giải hoặc lấy mẫu."
+          }
+        ]
+      },
+      {
+        "id": "causal-attention",
+        "title": "Suy ra attention rồi dùng primitive hợp nhất",
+        "summary": "Phương trình ngắn; phần khó là hình dạng, hệ số tỷ lệ và ngăn truy cập token tương lai.",
+        "body": [
+          "Với mỗi head, query chọn điều một vị trí đang tìm, key mô tả điều các vị trí cung cấp và value mang thông tin cần trộn. Điểm số là QKᵀ chia cho căn bậc hai của chiều head. Causal mask loại các vị trí bên phải trước softmax, rồi trọng số được chuẩn hóa theo hàng dùng để trộn V.",
+          "Giữ một triển khai viết tay ngắn làm đặc tả thực thi. scaled_dot_product_attention của PyTorch 2.13 có thể điều phối đến kernel tối ưu, tích hợp với torch.compile và nhận is_causal=True. Hãy so sánh đầu ra cùng gradient ở float64 trên một tensor nhỏ xác định trước khi thay triển khai giảng dạy. Hàm luôn tuân theo dropout_p khác không, kể cả lúc đánh giá, vì vậy module phải truyền 0.0 khi không huấn luyện."
+        ],
+        "points": [
+          "Với Q, K, V có hình dạng [B, H, T, D], attention trả về [B, H, T, D].",
+          "Hệ số 1/sqrt(D) ngăn tích vô hướng tăng theo độ rộng head.",
+          "Causal masking diễn ra trước softmax.",
+          "Dropout phải bằng không khi đánh giá xác định."
+        ],
+        "code": {
+          "title": "Causal SDPA hiện tại"
+        },
+        "callouts": [
+          {
+            "title": "Quy ước mask khác nhau",
+            "body": "Mask boolean không có ý nghĩa giống hệt trong mọi API Transformer. Ở đây hãy ưu tiên is_causal=True và thêm kiểm thử rò rỉ token tương lai."
+          }
+        ]
+      },
+      {
+        "id": "transformer-block",
+        "title": "Ghép block decoder với hợp đồng kiểm thử được",
+        "summary": "Multi-head attention chỉ trở thành mô hình ngôn ngữ sau khi projection, đường residual, normalization và mạng feed-forward được ghép đúng.",
+        "body": [
+          "Chiếu embedding thành tensor query, key và value, tách chiều đặc trưng thành các head, áp dụng causal attention, nối các head rồi dùng projection đầu ra. Kết nối residual bảo toàn đường thông tin trực tiếp, còn normalization và mạng feed-forward biến đổi từng token độc lập giữa các phép attention.",
+          "Head mô hình ngôn ngữ cuối ánh xạ biểu diễn của mỗi token thành logits từ vựng. Quá trình sinh liên tục chạy mô hình trên prefix hiện có và chỉ lấy mẫu từ vị trí cuối. Giải mã có cache là tối ưu nâng cao; trước tiên hãy thiết lập cách sinh toàn prefix đúng và các kiểm thử xác định."
+        ],
+        "points": [
+          "Độ rộng embedding phải chia hết cho số head.",
+          "Phép cộng residual yêu cầu hình dạng giống hệt.",
+          "Huấn luyện dùng song song mọi vị trí đã dịch; quá trình sinh hé lộ từng vị trí một.",
+          "model.eval() thay đổi hành vi dropout nhưng tự nó không tắt autograd."
+        ],
+        "code": {
+          "title": "Ranh giới sinh mẫu an toàn"
+        }
+      },
+      {
+        "id": "ragged-and-compiled",
+        "title": "Hiện đại hóa hiệu năng mà không che khuất tính đúng đắn",
+        "summary": "Attention hiệu quả và biên dịch chỉ nên đến sau khi mô hình eager đã có kiểm thử hình dạng, mask và gradient.",
+        "body": [
+          "nn.Transformer tham chiếu vẫn hữu ích để học, nhưng hướng dẫn PyTorch hiện tại xây dựng layer Transformer hiệu quả từ SDPA và torch.compile. PyTorch 2.13 xếp torch.nested vào API chưa ổn định, và tài liệu cảnh báo nested tensor hiện không được phát triển tích cực nên phải tự chịu rủi ro khi dùng. Hãy giữ padding dense thông thường làm đường cơ sở di động; nếu thử nghiệm, ưu tiên layout=torch.jagged vì có độ phủ toán tử tốt hơn và tích hợp với torch.compile.",
+          "Biên dịch mô hình hoặc một block lặp lại, không biên dịch tokenization, lệnh in hoặc luồng điều khiển lấy mẫu. Khởi động hàm đã biên dịch, so sánh đầu ra eager với compiled và đo trên độ dài chuỗi đại diện. Theo dõi việc biên dịch lại khi hình dạng batch hoặc chuỗi thay đổi."
+        ],
+        "code": {
+          "title": "Chỉ biên dịch sau khi đã xác minh tương đương eager"
+        }
+      },
+      {
+        "id": "vision-tokens",
+        "title": "Chuyển ý tưởng token sang ảnh",
+        "summary": "Vision Transformer xem các patch ảnh đã làm phẳng hoặc chiếu như một chuỗi có thông tin vị trí không gian.",
+        "body": [
+          "Dùng nn.Unfold hoặc tích chập có stride để biến ảnh [B, C, H, W] thành N token patch. Projection được học ánh xạ mỗi patch đã làm phẳng sang độ rộng embedding, class token có thể tóm tắt chuỗi và positional embedding bảo toàn vị trí patch. Tái dựng ảnh từ patch là kiểm tra tính đúng đắn đầu tiên tốt nhất.",
+          "Với suy luận huấn luyện sẵn, dùng enum weight của TorchVision và các phép biến đổi đi kèm. Những phép biến đổi đó mã hóa giả định resize, crop, đổi tỷ lệ và chuẩn hóa; tự tạo pipeline tiền xử lý trông tương tự có thể âm thầm làm giảm độ chính xác. Lần chạy đầu có thể tải checkpoint đã chọn, vì vậy hãy cache trước một bài học ngoại tuyến."
+        ],
+        "code": {
+          "title": "Nạp ViT cùng hợp đồng tiền xử lý"
+        }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Kernel attention",
+        "book": "Các notebook suy ra và trực tiếp triển khai causal scaled dot-product attention.",
+        "current": "Suy ra một lần, sau đó dùng torch.nn.functional.scaled_dot_product_attention",
+        "reason": "SDPA của PyTorch 2.13 chọn triển khai tối ưu khi được hỗ trợ và kết hợp với torch.compile trong khi vẫn bảo toàn cùng hợp đồng toán học."
+      },
+      {
+        "topic": "Xây dựng Transformer",
+        "book": "Một block tùy chỉnh nhỏ và các thành phần kiểu nn.Transformer minh họa kiến trúc.",
+        "current": "Xây dựng từ SDPA và biên dịch; xem nested tensor như thí nghiệm chưa ổn định",
+        "reason": "Tài liệu hiện tại mô tả nn.Transformer như triển khai tham chiếu và khuyến nghị các khối cấp thấp hơn cho biến thể hiệu quả. PyTorch 2.13 cảnh báo nested tensor hiện không được phát triển tích cực."
+      },
+      {
+        "topic": "Mô hình thị giác",
+        "book": "Notebook ViT xây dựng patch và encoder nhỏ để làm rõ cơ chế.",
+        "current": "Dùng enum weight của TorchVision và weights.transforms() cho suy luận huấn luyện sẵn",
+        "reason": "Đối tượng weight mang chính xác metadata tiền xử lý và danh mục gắn với checkpoint đã chọn."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p2ch9--generating_names",
+        "reason": "Bắt đầu với lấy mẫu bigram, mục tiêu đã dịch, sequence MLP và vòng tự hồi quy hoàn chỉnh."
+      },
+      {
+        "slug": "p2ch9--attention",
+        "reason": "Theo dõi quá trình chuyển từ mô hình cơ sở sang causal attention và block Transformer."
+      },
+      {
+        "slug": "p2ch9--scratch",
+        "reason": "Xây dựng lại và gắn công cụ đo cho Transformer nhỏ như một bài tập triển khai tổng hợp."
+      },
+      {
+        "slug": "p2ch9--tokenization",
+        "reason": "So sánh ID ký tự với tokenizer cấp từ và kiểm tra cách quyết định từ vựng làm thay đổi chuỗi."
+      },
+      {
+        "slug": "p2ch9--visualization",
+        "reason": "Kiểm tra cấu trúc mô hình và đồ thị tính toán sau khi hiểu các hợp đồng forward."
+      },
+      {
+        "slug": "p2ch9--vit",
+        "reason": "Chuyển abstraction chuỗi sang các patch ảnh không chồng lấn và một class token."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Chứng minh tính nhân quả",
+        "prompt": "Tạo hai chuỗi có cùng prefix và chỉ khác ở token tương lai. Khẳng định logits trên prefix chung bằng nhau trong chế độ đánh giá, sau đó cố ý bỏ causal mask và cho thấy kiểm thử thất bại.",
+        "success": "mô hình có mask đạt tại mọi vị trí chung và phản ví dụ không mask chứng minh rò rỉ token tương lai"
+      },
+      {
+        "title": "Kiểm tra tính tương đương SDPA",
+        "prompt": "Triển khai trực tiếp phương trình attention ở float64 và so sánh đầu ra forward cùng gradient q, k, v với scaled_dot_product_attention trên ví dụ causal nhỏ. Chạy trên CPU hoặc buộc SDPBackend.MATH để lựa chọn backend không che khuất tính tương đương phương trình, rồi kiểm thử backend mặc định riêng.",
+        "success": "torch.testing.assert_close đạt cho đầu ra và cả ba gradient dưới ngưỡng sai số có lý do, đồng thời backend được ghi lại"
+      },
+      {
+        "title": "Đo các đánh đổi của patch",
+        "prompt": "Chia cùng một ảnh thành patch kích thước 8, 16 và 32. Tái dựng từng ảnh, báo cáo số token và tính số phần tử trong ma trận attention dense cho mỗi trường hợp.",
+        "success": "mọi ảnh tái dựng khớp đầu vào và báo cáo giải thích quan hệ bậc hai giữa số token với bộ nhớ attention"
+      }
+    ],
+    "references": [
+      {
+        "type": "Tài liệu tham khảo giảng dạy",
+        "title": "Học Deep Learning với PyTorch"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Các khối xây dựng Transformer"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Scaled dot-product attention"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Nested tensor"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "Embedding"
+      },
+      {
+        "type": "PyTorch chính thức",
+        "title": "TorchVision ViT-B/16"
+      }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch9--attention",
+      "title": "Attention",
+      "summary": "Triển khai và trực quan hóa attention như một cơ chế truy xuất thông tin có trọng số được học.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "cơ chế attention",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `get_batch`, `train`, `generate_samples`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `dot_product_attention_single`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `scaled_dot_product_causal_attention`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `scaled_dot_product_causal_attention`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "lượt truyền xuôi",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 6 truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "cơ chế attention",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `AttentionMLP`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "trực quan hóa",
+            "cơ chế attention",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `visualize_attention`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô này định nghĩa `TransformerBlock`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `Transformer`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 12 đo sai số dự đoán, sau đó cập nhật các tham số đã học."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 13 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch9--generating_names",
+      "title": "Sinh tên",
+      "summary": "Huấn luyện mô hình tự hồi quy và lấy mẫu các chuỗi ký tự mới.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "token hóa"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "token hóa"
+          ],
+          "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nạp dữ liệu"
+          ],
+          "explanation": "Ô 4 nạp hoặc sắp xếp dữ liệu."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nhập thư viện",
+            "trực quan hóa"
+          ],
+          "explanation": "Ô 5 trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "nhập thư viện",
+            "token hóa"
+          ],
+          "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "token hóa"
+          ],
+          "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "nhập thư viện",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô này định nghĩa `get_batch`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "token hóa"
+          ],
+          "explanation": "Ô 12 xây dựng mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 13 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `SequenceMLP`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 15,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động"
+          ],
+          "explanation": "Ô này định nghĩa `train`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 16,
+          "concepts": [
+            "tối ưu hóa"
+          ],
+          "explanation": "Ô 16 cập nhật các tham số đã học."
+        },
+        {
+          "number": 17,
+          "concepts": [
+            "lượt truyền xuôi",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `generate_samples`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 18,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 19,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch9--scratch",
+      "title": "Bản thử nghiệm",
+      "summary": "Làm qua ví dụ thử nghiệm và kiểm tra cách từng ô mã thúc đẩy quy trình của chương.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "token hóa"
+          ],
+          "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "cơ chế attention",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `get_batch`, `train`, `generate_samples`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 5 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "hình dạng tensor",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô 6 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "hình dạng tensor"
+          ],
+          "explanation": "Ô 7 định hình lại hoặc kiểm tra các tensor để các chiều phù hợp với phép toán tiếp theo. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô này định nghĩa `scaled_dot_product_causal_attention`, `scaled_dot_product_causal_attention`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 10,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "cơ chế attention"
+          ],
+          "explanation": "Ô này định nghĩa `TransformerBlock`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 11,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tối ưu hóa",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `Transformer`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 12,
+          "concepts": [
+            "thí nghiệm Python"
+          ],
+          "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo."
+        },
+        {
+          "number": 13,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 14,
+          "concepts": [
+            "thiết lập môi trường"
+          ],
+          "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài đặt gói hoặc chạy lệnh shell/IPython. Hãy chạy ô này trước các lệnh import phụ thuộc vào gói đó."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch9--tokenization",
+      "title": "Token hóa",
+      "summary": "Chuyển văn bản thành token và ID token phù hợp cho mô hình ngôn ngữ.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "tiền xử lý",
+            "token hóa"
+          ],
+          "explanation": "Ô 1 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "token hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 3 nạp hoặc sắp xếp dữ liệu, sau đó chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "hình dạng tensor",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `get_batch`, `train`, `generate_samples`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "cơ chế attention",
+            "token hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `TransformerBlock`, `Transformer`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 6,
+          "concepts": [
+            "tiền xử lý",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "token hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 6 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình, sau đó đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 7,
+          "concepts": [
+            "hàm mất mát",
+            "tối ưu hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô 7 đo sai số dự đoán, sau đó cập nhật các tham số đã học. Ô này cũng đặt tensor hoặc module lên bộ tăng tốc đã chọn khi có sẵn."
+        },
+        {
+          "number": 8,
+          "concepts": [
+            "lượt truyền xuôi",
+            "token hóa",
+            "bố trí trên thiết bị"
+          ],
+          "explanation": "Ô này định nghĩa `generate_samples`, `format_sequence`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 9,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch9--visualization",
+      "title": "Trực quan hóa",
+      "summary": "Trực quan hóa đầu vào transformer, attention hoặc các chuỗi được sinh.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "lượt truyền xuôi",
+            "hàm mất mát",
+            "tối ưu hóa",
+            "vi phân tự động",
+            "cơ chế attention",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `get_batch`, `train`, `generate_samples`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "hình dạng tensor",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "token hóa"
+          ],
+          "explanation": "Ô này định nghĩa `SequenceMLP`. Phần định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá thành phần đó mà không lặp lại chi tiết triển khai."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "nhập thư viện",
+            "lượt truyền xuôi"
+          ],
+          "explanation": "Ô 4 truyền dữ liệu qua mô hình."
+        },
+        {
+          "number": 5,
+          "concepts": [
+            "nhập thư viện"
+          ],
+          "explanation": "Ô này nạp các thư viện cần cho giai đoạn tiếp theo của notebook. Việc nhóm các lệnh import giúp những ô sau tập trung vào chính thí nghiệm."
+        }
+      ]
+    },
+    {
+      "slug": "p2ch9--vit",
+      "title": "ViT",
+      "summary": "Kiểm tra cách vision transformer biến các patch ảnh thành một chuỗi token.",
+      "cells": [
+        {
+          "number": 1,
+          "concepts": [
+            "nhập thư viện",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "trực quan hóa",
+            "khả năng tái lập"
+          ],
+          "explanation": "Ô 1 nạp hoặc sắp xếp dữ liệu, sau đó chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng."
+        },
+        {
+          "number": 2,
+          "concepts": [
+            "hình dạng tensor",
+            "tiền xử lý",
+            "trực quan hóa",
+            "tích chập",
+            "khuếch tán"
+          ],
+          "explanation": "Ô 2 chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình, sau đó trực quan hóa các giá trị trung gian hoặc cuối cùng. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 3,
+          "concepts": [
+            "nhập thư viện",
+            "hình dạng tensor",
+            "nạp dữ liệu",
+            "tiền xử lý",
+            "định nghĩa mô hình",
+            "lượt truyền xuôi",
+            "tích chập",
+            "token hóa"
+          ],
+          "explanation": "Ô 3 nạp hoặc sắp xếp dữ liệu, sau đó chuyển đổi đầu vào sang dạng sẵn sàng cho mô hình, sau đó xây dựng mô hình. Hãy theo dõi các hình dạng được in hoặc được suy ra ở đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ."
+        },
+        {
+          "number": 4,
+          "concepts": [
+            "cấu trúc notebook"
+          ],
+          "explanation": "Ô trống có chủ đích này phân tách các giai đoạn của notebook và dành chỗ cho một thí nghiệm."
+        }
+      ]
+    }
+  ]
+}

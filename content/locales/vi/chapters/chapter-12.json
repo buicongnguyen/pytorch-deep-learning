@@ -1,0 +1,206 @@
+{
+  "chapter": {
+    "number": 12,
+    "title": "Nạp và khám phá dữ liệu CT",
+    "summary": "Phân tích metadata LUNA, ánh xạ tọa độ vật lý sang voxel, cắt các ứng viên 3D, lưu đệm công việc tốn kém và khảo sát các thể tích."
+  },
+  "lesson": {
+    "chapter": 12,
+    "outcomes": [
+      "Nạp một chuỗi CT trong khi bảo toàn cường độ, gốc tọa độ, khoảng cách voxel, hướng và danh tính chuỗi ảnh.",
+      "Chuyển vị trí ứng viên giữa tọa độ thế giới và chỉ số mảng, đồng thời xác minh phép biến đổi bằng kiểm thử khứ hồi.",
+      "Xây dựng các tensor lấy tâm theo ứng viên thông qua Dataset và DataLoader tùy chỉnh với hợp đồng shape và nhãn được tài liệu hóa.",
+      "Xác thực mẫu bằng trực quan và chương trình, sau đó tinh chỉnh hiệu năng nạp mà không làm thay đổi ý nghĩa của mẫu."
+    ],
+    "sections": [
+      {
+        "id": "ct-contract",
+        "title": "Xem thể tích CT là pixel cộng với hình học",
+        "summary": "Chỉ riêng mảng NumPy không thể định vị một ứng viên được biểu diễn bằng tọa độ vật lý.",
+        "body": [
+          "Trình đọc CT cung cấp một mảng cường độ và metadata mô tả vị trí của từng voxel trong không gian bệnh nhân hoặc máy quét. Hãy bảo toàn gốc tọa độ, khoảng cách voxel, hướng và UID của chuỗi cùng nhau. Các trục mảng thường được sắp theo thứ tự khác với tọa độ vật lý x, y, z, vì vậy mọi phép chuyển đổi phải nêu rõ cả hai quy ước.",
+          "Giá trị CT có thể được cắt ngưỡng hoặc áp dụng cửa sổ cho bài toán học, nhưng hãy giữ dtype và khoảng giá trị gốc đủ lâu để kiểm tra. Chuẩn hóa là một phần của hợp đồng đầu vào: ghi rõ giới hạn cắt, quy tắc co giãn, dtype đầu ra và liệu không khí hoặc phần đệm có nhận một giá trị đặc biệt hay không."
+        ],
+        "points": [
+          "UID chuỗi xác định lần quét nguồn.",
+          "Gốc tọa độ định vị một điểm tham chiếu trong không gian chỉ số bằng tọa độ thế giới.",
+          "Khoảng cách cho biết cự ly vật lý giữa các voxel lân cận.",
+          "Hướng ghi lại định hướng trục và không được âm thầm giả định là ma trận đơn vị."
+        ],
+        "callouts": [
+          {
+            "title": "Thứ tự mảng không phải thứ tự thế giới",
+            "body": "Nhiều mảng dùng thứ tự chỉ số [z, y, x], trong khi chú thích dùng tọa độ vật lý [x, y, z]. Hãy đặt tên cho các thành phần tọa độ thay vì dựa vào trực giác vị trí."
+          }
+        ]
+      },
+      {
+        "id": "coordinate-roundtrip",
+        "title": "Biến phép chuyển đổi tọa độ thành một hàm được kiểm thử độc lập",
+        "summary": "Các crop ứng viên chỉ hữu ích khi tâm vật lý của chúng ánh xạ đến đúng voxel dự kiến.",
+        "body": [
+          "Phép chuyển từ thế giới sang chỉ số trừ đi gốc tọa độ, áp dụng ma trận hướng nghịch đảo, chia cho khoảng cách rồi sắp lại các trục cho mảng. Chính sách làm tròn rất quan trọng: một tâm liên tục có thể nằm giữa các voxel, trong khi phép cắt cần chỉ số nguyên. Hãy giữ lại chỉ số dấu phẩy động để chẩn đoán trước khi chọn tâm crop.",
+          "Kiểm thử các điểm đã biết và phép khứ hồi theo cả hai hướng. Một phép khứ hồi phải khôi phục vị trí thế giới ban đầu trong sai số tuyệt đối được nêu bằng milimét và được biện minh từ độ chính xác của phép biến đổi cùng khoảng cách voxel. Cũng cần kiểm thử chỉ số âm, biên trên, khoảng cách bất đẳng hướng và hướng không phải ma trận đơn vị khi định dạng nguồn cung cấp."
+        ],
+        "code": {
+          "title": "Kiểm thử thay vì tin tưởng một phép chuyển đổi"
+        }
+      },
+      {
+        "id": "candidate-crops",
+        "title": "Cắt ứng viên với hành vi biên rõ ràng",
+        "summary": "Tensor kích thước cố định chỉ đơn giản hóa việc tạo batch khi các trường hợp ở mép tuân theo quy tắc đệm được tài liệu hóa.",
+        "body": [
+          "Chuyển tâm ứng viên sang tọa độ mảng, tính nửa chiều rộng cho độ sâu, chiều cao và chiều rộng, rồi cắt một phạm vi vật lý hoặc voxel cố định. Ứng viên gần biên cần được giới hạn rồi thêm phần đệm. Không để lát cắt âm của Python cuộn sang phía đối diện của thể tích.",
+          "Trả về crop, nhãn, UID chuỗi, tâm và mọi metadata cần cho phân tích lỗi sau này. Khẳng định shape crop cuối cùng cho mọi phần tử. Nếu crop được xác định bằng voxel, hãy lưu ý rằng phạm vi vật lý thay đổi theo khoảng cách; nếu được xác định bằng milimét, phép lấy mẫu lại trở thành một phần của hợp đồng."
+        ],
+        "code": {
+          "title": "Xác thực mọi mẫu được trả về"
+        },
+        "callouts": [
+          {
+            "title": "Giữ thông tin nguồn gốc trong batch",
+            "body": "Mã định danh và tâm không đi vào mạng, nhưng chúng thiết yếu khi cần truy một dương tính giả về lại thể tích nguồn."
+          }
+        ]
+      },
+      {
+        "id": "dataset-boundary",
+        "title": "Tách việc đánh chỉ số khỏi nạp và biến đổi",
+        "summary": "Dataset kiểu ánh xạ phải bảo đảm mỗi chỉ số ánh xạ tới một mẫu có hợp đồng xác định và có thể tái lập.",
+        "body": [
+          "Xây dựng danh sách ứng viên bất biến khi khởi tạo và trì hoãn việc giải mã thể tích tốn kém. __len__ trả về số ứng viên; __getitem__ phân giải một ứng viên, nạp hoặc lấy thể tích từ bộ đệm, cắt, chuẩn hóa rồi trả về tensor cùng metadata. Logic lặp lại nên nằm trong các hàm thông thường để có thể kiểm thử mà không cần worker của DataLoader.",
+          "Quyết định bộ đệm sẽ lưu thể tích nguồn đã giải mã hay crop dẫn xuất. Bộ đệm đọc-xuyên cục bộ theo tiến trình thường đơn giản hơn chia sẻ trạng thái có thể thay đổi giữa các worker. Đưa phiên bản nguồn và tiền xử lý vào khóa bộ đệm lâu dài để mảng cũ không bị nhầm với dữ liệu hiện tại."
+        ],
+        "code": {
+          "title": "Một ranh giới mẫu có kiểu rõ ràng"
+        }
+      },
+      {
+        "id": "dataloader-behavior",
+        "title": "Chỉ tinh chỉnh DataLoader sau khi mẫu đã đúng",
+        "summary": "Worker, prefetch, bộ nhớ ghim và tiến trình bền vững làm thay đổi thông lượng và vòng đời, không làm thay đổi ngữ nghĩa Dataset.",
+        "body": [
+          "Bắt đầu với num_workers=0 vì lỗi có traceback trực tiếp và toàn bộ trạng thái nằm trong một tiến trình. Khi mẫu đã đúng, hãy đo thêm worker, bộ nhớ ghim CUDA, prefetch_factor và persistent_workers. Nhiều worker hơn có thể làm chậm khối lượng công việc bị giới hạn bởi lưu trữ hoặc phụ thuộc nhiều vào bộ đệm. Ghép pin_memory=True với non_blocking=True khi chuyển batch sang CUDA và đo xem việc truyền có thực sự là nút thắt hay không.",
+          "Để hành vi ngẫu nhiên có thể tái lập, hãy đặt seed cho PyTorch, Python và mã NumPy dùng bên trong mỗi worker, đồng thời truyền một torch.Generator đã đặt seed vào DataLoader. Trên Windows và macOS, giữ các hàm worker ở phạm vi mô-đun và chỉ tạo hoặc lặp qua loader nhiều worker bên dưới guard if __name__ == '__main__'. Trong notebook tương tác, dùng num_workers=0 cho đến khi mã Dataset và worker nằm trong mô-đun có thể import. Không kỳ vọng kết quả chính xác sẽ giữ nguyên giữa các bản PyTorch hoặc nền tảng khác nhau."
+        ],
+        "code": {
+          "title": "Đặt seed cho các thư viện cục bộ của worker"
+        }
+      },
+      {
+        "id": "visual-data-review",
+        "title": "Kiểm tra dữ liệu trong ngữ cảnh vật lý và tensor",
+        "summary": "Biểu đồ phát hiện lỗi tọa độ, định hướng, cắt ngưỡng và nhãn mà thống kê tổng hợp không thể định vị.",
+        "body": [
+          "Hiển thị các lát cắt trực giao qua ứng viên dương và âm, đánh dấu tâm dự kiến, đồng thời đưa danh tính chuỗi và khoảng cường độ vào chú thích. Lấy mẫu các ví dụ lớn, nhỏ, ở giữa, sát biên và khác thường thay vì chỉ chọn các trường hợp dương đẹp mắt.",
+          "Kết hợp rà soát trực quan với các tóm tắt tự động: số lượng lớp, chuỗi bị thiếu, cực trị crop, giá trị không hữu hạn, danh tính trùng lặp và tỷ lệ theo từng tập. Lưu báo cáo cùng phiên bản chia tập và tiền xử lý để có thể tách thay đổi mô hình khỏi thay đổi dữ liệu về sau."
+        ],
+        "points": [
+          "Xem chế độ thô và đã chuẩn hóa cạnh nhau.",
+          "Xác nhận định hướng trái/phải và trên/dưới khi có liên quan.",
+          "Vẽ tâm ứng viên trên nhiều hơn một mặt phẳng.",
+          "Truy mọi crop đáng ngờ về metadata nguồn."
+        ]
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Nạp dữ liệu",
+        "book": "Các notebook giới thiệu Dataset tùy chỉnh và bộ đệm quanh chuỗi CT cùng các ứng viên.",
+        "current": "Đo num_workers, ghim bộ nhớ CUDA, prefetch_factor và persistent_workers",
+        "reason": "PyTorch 2.13 cung cấp các điều khiển DataLoader này, nhưng lợi ích phụ thuộc vào lưu trữ, phép biến đổi, truyền CUDA, hành vi tiến trình của nền tảng và thiết kế bộ đệm."
+      },
+      {
+        "topic": "Worker có thể tái lập",
+        "book": "Việc khám phá thường bắt đầu bằng một tiến trình tương tác.",
+        "current": "Đặt seed cho thư viện cục bộ của worker và truyền torch.Generator",
+        "reason": "Khi num_workers dương, mỗi worker có trạng thái tiến trình riêng. Việc đặt seed rõ ràng giữ cho crop ngẫu nhiên và xáo trộn có thể tái lập trong môi trường đã tài liệu hóa."
+      },
+      {
+        "topic": "Cấu trúc mẫu",
+        "book": "Tuple trả về gọn tensor ứng viên, nhãn và metadata nhận dạng.",
+        "current": "Dùng ánh xạ có tên hoặc bản ghi có kiểu tại ranh giới dự án",
+        "reason": "Tên làm giảm lỗi trục và thứ tự trường khi các chương sau thêm mask, prompt và thông tin nguồn gốc. DataLoader có thể ghép các ánh xạ lồng nhau thông thường."
+      }
+    ],
+    "notebookLinks": [
+      {
+        "slug": "p2ch12_explore_data",
+        "reason": "Khám phá chuỗi ảnh, ứng viên, lát cắt CT và hành vi cường độ trước khi tạo loader huấn luyện."
+      },
+      {
+        "slug": "p2ch12--sandbox",
+        "reason": "Thực hành getCt, LunaDataset, tìm mẫu dương và kiểm tra từng ứng viên một cách tương tác."
+      }
+    ],
+    "exercises": [
+      {
+        "title": "Kiểm thử phép khứ hồi tọa độ",
+        "prompt": "Tạo kiểm thử cho các điểm ở tâm, biên, có khoảng cách bất đẳng hướng và hướng không phải ma trận đơn vị. Chuyển từ thế giới sang chỉ số liên tục rồi quay lại, sau đó biện minh sai số tuyệt đối từ metadata.",
+        "success": "mọi điểm hợp lệ đều khứ hồi trong sai số đã nêu và việc cố ý hoán đổi thứ tự trục làm ít nhất một kiểm thử thất bại"
+      },
+      {
+        "title": "Chạy kiểm toán hợp đồng mẫu",
+        "prompt": "Xác thực shape, dtype, khoảng hữu hạn, nhãn, danh tính, tâm và tập thành viên trên ít nhất 100 ứng viên phân tầng, rồi lưu báo cáo lỗi mà máy có thể đọc.",
+        "success": "kiểm toán bao quát mẫu dương, âm, sát biên và từ nhiều chuỗi, đồng thời mọi lỗi đều truy được về một danh tính nguồn"
+      },
+      {
+        "title": "Đo chuẩn các cấu hình loader",
+        "prompt": "Đo số ví dụ mỗi giây với num_workers bằng 0, 2 và 4, sau đó kiểm thử pin_memory và persistent_workers khi thích hợp. Loại trừ lần điền bộ đệm đầu tiên hoặc báo cáo riêng.",
+        "success": "cấu hình được chọn có bằng chứng từ các phép đo lặp lại và trả về cùng danh tính mẫu cùng hợp đồng tensor"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "Dataset và DataLoader" },
+      { "type": "PyTorch chính thức", "title": "torch.utils.data" },
+      { "type": "PyTorch chính thức", "title": "Khả năng tái lập" },
+      { "type": "API chẩn đoán hình ảnh gốc", "title": "Hình học và phép biến đổi ảnh SimpleITK" },
+      { "type": "Bộ dữ liệu gốc", "title": "Hợp đồng đánh giá và tọa độ thế giới của LUNA16" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch12_explore_data",
+      "title": "P2ch12 Khám phá dữ liệu",
+      "summary": "Kiểm tra ứng viên LUNA thô, phép biến đổi tọa độ và crop CT.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "nạp dữ liệu"], "explanation": "Ô 1 nạp hoặc tổ chức dữ liệu." },
+        { "number": 2, "concepts": ["thí nghiệm Python"], "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["nhập thư viện", "trực quan hóa", "khuếch tán"], "explanation": "Ô 4 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2ch12 Khám phá dữ liệu. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 7, "concepts": ["trực quan hóa"], "explanation": "Ô 7 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 8, "concepts": ["trực quan hóa"], "explanation": "Ô 8 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 9, "concepts": ["trực quan hóa"], "explanation": "Ô 9 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 10, "concepts": ["nạp dữ liệu"], "explanation": "Ô 10 nạp hoặc tổ chức dữ liệu." },
+        { "number": 11, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2ch12 Khám phá dữ liệu. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 12, "concepts": ["thí nghiệm Python"], "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 13, "concepts": ["nhập thư viện", "hình dạng tensor", "khuếch tán"], "explanation": "Ô này định nghĩa `build2dLungMask`, `build3dLungMask`. Định nghĩa này đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp lại chi tiết triển khai." },
+        { "number": 14, "concepts": ["nhập thư viện", "khuếch tán"], "explanation": "Ô 14 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 15, "concepts": ["thí nghiệm Python"], "explanation": "Ô 15 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." }
+      ]
+    },
+    {
+      "slug": "p2ch12--sandbox",
+      "title": "Khu vực thử nghiệm",
+      "summary": "Không gian nháp của chương để thử các ý tưởng trung gian, hình dạng tensor và API bên ngoài mạch notebook chính.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 3, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 4, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 5, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 6, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 7, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 8, "concepts": ["thiết lập môi trường"], "explanation": "Ô này chuẩn bị môi trường notebook bằng cách cài một package hoặc chạy lệnh shell/IPython. Hãy chạy nó trước các lệnh import phụ thuộc vào package đó." },
+        { "number": 9, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 10, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 11, "concepts": ["nhập thư viện", "hình dạng tensor", "nạp dữ liệu"], "explanation": "Ô 11 nạp hoặc tổ chức dữ liệu. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán tiếp theo hợp lệ." },
+        { "number": 12, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    }
+  ]
+}

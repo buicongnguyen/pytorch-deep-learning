@@ -1,0 +1,367 @@
+{
+  "chapter": {
+    "number": 15,
+    "title": "Phân đoạn và mô hình nền tảng",
+    "summary": "Áp dụng Segment Anything cho lát cắt CT, tạo mask và prompt, tinh chỉnh mô hình rồi chạy suy luận."
+  },
+  "lesson": {
+    "chapter": 15,
+    "outcomes": [
+      "Biểu diễn nhất quán logit và mask phân đoạn nhị phân, đồng thời tính Dice và IoU với hành vi mask rỗng rõ ràng.",
+      "Dùng phân đoạn tự động và mô hình nền tảng được điều khiển bằng điểm, đồng thời đo độ nhạy với tiền xử lý và prompt.",
+      "Tạo bộ dữ liệu nhãn giả có thể kiểm toán, bảo toàn danh tính nguồn, phiên bản mô hình, prompt và trạng thái rà soát.",
+      "Tinh chỉnh và đánh giá bộ phân đoạn ngữ nghĩa bằng phép biến đổi ảnh/mask đi cặp, checkpoint an toàn và cách chia theo cấp bệnh nhân.",
+      "Phân biệt khả năng học chuyển giao hữu ích với tính hợp lệ lâm sàng, đồng thời tài liệu hóa giấy phép, nguồn gốc và kiểu thất bại."
+    ],
+    "sections": [
+      {
+        "id": "segmentation-contract",
+        "title": "Xác định hợp đồng ở cấp pixel trước khi chọn mô hình",
+        "summary": "Phân đoạn ánh xạ từng vị trí không gian sang một lớp, vì vậy logit, mask, ngưỡng và phép rút gọn phải thống nhất.",
+        "body": [
+          "Với phân đoạn nhị phân, mô hình có thể trả về một kênh logit [B, 1, H, W] và dùng BCEWithLogitsLoss, hoặc hai logit lớp với cross-entropy. Mask ground-truth là nhãn đích không gian, không phải ảnh RGB. Giữ chúng dưới dạng tensor lớp boolean hoặc số nguyên và không bao giờ chuẩn hóa giá trị nhãn như cường độ ảnh.",
+          "Dice và IoU tóm tắt độ chồng lấn sau một ngưỡng hoặc argmax. Giữ loss huấn luyện và metric báo cáo thành các hàm riêng, xác định phép rút gọn diễn ra theo từng ảnh hay toàn batch, đồng thời xử lý rõ trường hợp cả dự đoán và nhãn đích đều rỗng."
+        ],
+        "points": [
+          "Logit là đầu ra mô hình không bị chặn; xác suất đến từ sigmoid hoặc softmax.",
+          "Mask phải dùng cùng hình học đã biến đổi với ảnh.",
+          "Ngưỡng thuộc về quy tắc quyết định được chọn trên tập xác thực.",
+          "Báo cáo độ chồng lấn cùng số lượng thất bại và các ví dụ đại diện."
+        ],
+        "code": { "title": "Điểm soft Dice theo từng ảnh" },
+        "callouts": [
+          {
+            "title": "Số hạng làm trơn xác định hành vi",
+            "body": "Epsilon giữ phép chia hữu hạn và khiến triển khai này trả về 1 khi cả hai tổng đều đúng bằng không. Hãy nêu rõ đó có phải chính sách báo cáo hay không và kiểm thử nhãn đích rỗng, dự đoán rỗng cùng trường hợp cả hai đều rỗng."
+          }
+        ]
+      },
+      {
+        "id": "automatic-and-prompted",
+        "title": "So sánh mask tự động với prompt rõ ràng",
+        "summary": "Mô hình nền tảng có thể đề xuất nhiều mask hoặc điều kiện hóa dự đoán bằng các điểm, nhưng không chế độ nào tự hiểu nhiệm vụ y khoa.",
+        "body": [
+          "Sinh mask tự động có thể cho thấy cách một mô hình tổng quát phân vùng ảnh thông thường. Hãy kiểm tra diện tích mask, trường độ tin cậy, vùng chồng lấn và vùng lồng nhau thay vì hiển thị mọi đề xuất màu như thể chúng có ý nghĩa ngang nhau. Prompt điểm cung cấp giả thuyết mạnh hơn, nhưng thay đổi nhỏ về tọa độ có thể chọn một đối tượng hoặc vùng con khác.",
+          "Dùng cả ví dụ prompt dương và âm, bảo toàn kích thước ảnh gốc và vẽ prompt trên chính xác ảnh được đưa vào processor. Phép biến đổi tọa độ do resize hoặc padding phải do processor quản lý hoặc được tái hiện chính xác."
+        ],
+        "points": [
+          "Đề xuất tự động cần quy tắc chọn chuyên biệt theo nhiệm vụ.",
+          "Vị trí điểm là một phần đầu vào mô hình và phải được ghi lại.",
+          "Độ tin cậy không thay thế độ chồng lấn với ground truth.",
+          "Độ nhạy prompt cần được đo, không chỉ minh họa một lần."
+        ],
+        "code": { "title": "Chạy suy luận theo prompt mà không dùng autograd" }
+      },
+      {
+        "id": "ct-preprocessing",
+        "title": "Kết nối lát cắt CT với mô hình huấn luyện trên ảnh một cách minh bạch",
+        "summary": "Lặp một lát xám thành RGB thỏa yêu cầu shape nhưng không xóa được dịch chuyển miền.",
+        "body": [
+          "Chọn và tài liệu hóa cửa sổ CT, cắt cường độ, co giãn về khoảng mà processor mong đợi và chỉ tạo ba kênh khi mô hình ngoài yêu cầu. Vẽ lát cường độ gốc, đầu vào đã áp cửa sổ, điểm ứng viên và mask kết quả cùng nhau để lỗi tiền xử lý vẫn nhìn thấy được.",
+          "Tâm ứng viên biểu diễn trong tọa độ thể tích phải được chuyển sang tọa độ pixel của lát mà không hoán đổi trục. Kiểm thử một mốc đã biết và bảo toàn UID chuỗi, chỉ số lát, tâm thế giới, cửa sổ, phiên bản processor và prompt trong bản ghi đầu ra."
+        ],
+        "code": { "title": "Chuẩn hóa một cửa sổ CT đã tài liệu hóa" },
+        "callouts": [
+          {
+            "title": "Tương thích shape không đồng nghĩa hợp lệ về miền",
+            "body": "Tensor CT có shape RGB có thể chạy qua mô hình ảnh nhưng tạo ra mask vô nghĩa về y khoa. Rà soát ground truth và đánh giá theo miền vẫn cần thiết."
+          }
+        ]
+      },
+      {
+        "id": "pseudo-label-provenance",
+        "title": "Xem mask được sinh là nhãn giả, không phải ground truth",
+        "summary": "Một bộ dữ liệu được sinh hữu ích phải ghi lại cách tạo từng mask và liệu nó đã được rà soát hay chưa.",
+        "body": [
+          "Với mỗi lát nguồn, lưu ảnh hoặc tensor không mất dữ liệu, mask rời rạc và metadata có cấu trúc. Bao gồm chuỗi nguồn, lát, tâm ứng viên, cửa sổ tiền xử lý, phiên bản mô hình và processor, prompt, quy tắc chọn, điểm được sinh, thời gian và trạng thái rà soát. Lưu tư cách thành viên tập huấn luyện, xác thực và kiểm thử từ cách chia danh tính ban đầu.",
+          "Không chia ngẫu nhiên các ảnh đã sinh sau khi xuất. Nhiều lát, prompt hoặc mask dẫn xuất từ cùng một chuỗi CT vẫn có liên hệ. Rà soát một mẫu phân tầng trước khi tinh chỉnh và đánh phiên bản mọi quy tắc lọc để kết quả sau này truy được về một bản phát hành nhãn giả cụ thể."
+        ],
+        "code": { "title": "Bản ghi nhãn giả giàu thông tin nguồn gốc" }
+      },
+      {
+        "id": "paired-transforms",
+        "title": "Biến đổi ảnh và mask bằng cùng một quyết định ngẫu nhiên",
+        "summary": "TorchVision transforms v2 có thể áp dụng nhất quán hình học được hỗ trợ cho tensor Image và Mask.",
+        "body": [
+          "Bọc ảnh và mask bằng các kiểu tv_tensor ngữ nghĩa tương ứng, rồi đưa chúng qua một pipeline biến đổi v2. Phép biến đổi hình học điều phối thích hợp: nội suy ảnh có thể là bilinear trong khi mask rời rạc giữ nguyên ID lớp. Phép biến đổi quang học chỉ nên tác động lên ảnh.",
+          "TorchVision hiện khuyến nghị transforms v2 vì nó hỗ trợ ảnh, mask, hộp, video, keypoint và cấu trúc lồng tùy ý. Dù vậy vẫn phải kiểm tra các cặp đã biến đổi và thêm kiểm thử mốc tổng hợp; ghép cặp ở cấp API không chứng minh phép biến đổi phù hợp về giải phẫu."
+        ],
+        "code": { "title": "Tăng cường ảnh và mask đồng thời" },
+        "callouts": [
+          {
+            "title": "Rà soát phép lật trái-phải",
+            "body": "Một phép biến đổi có thể nhất quán hình học nhưng không hợp lệ cho nhiệm vụ mà định hướng mang ý nghĩa. Hãy tài liệu hóa phép biến đổi được phép thay vì sao chép công thức phân loại ảnh."
+          }
+        ]
+      },
+      {
+        "id": "fine-tune-and-checkpoint",
+        "title": "Tinh chỉnh bộ phân đoạn với ranh giới có thể tái lập",
+        "summary": "Processor huấn luyện sẵn, head mô hình, loss, optimizer và cách chia tập cùng nhau xác định thí nghiệm.",
+        "body": [
+          "Xác nhận phép co giãn và chuẩn hóa của processor để Dataset không áp dụng chúng hai lần. Xác minh ID nhãn, ignore index, độ phân giải đầu ra và cách resize logit trở lại shape mask. Bắt đầu bằng cách overfit vài mask đã rà soát trước lượt chạy nhãn giả đầy đủ.",
+          "Dùng AdamW, API AMP hiện hành khi có lợi và độ chồng lấn xác thực để chọn checkpoint. Lưu checkpoint state_dict đáng tin cậy cùng phiên bản mô hình/processor và bản phát hành chia tập. Tải lại vào mã đã dựng lại bằng weights_only=True và so sánh logit ảnh cố định trước khi tiếp tục."
+        ],
+        "code": { "title": "Lưu checkpoint trạng thái tinh chỉnh" }
+      },
+      {
+        "id": "foundation-model-review",
+        "title": "Đánh giá đồng thời khả năng chuyển giao, tốc độ và hạn chế",
+        "summary": "Mask kiểu SAM, embedding kiểu DINO và bộ phân đoạn đã tinh chỉnh trả lời các câu hỏi khác nhau và cần bằng chứng riêng.",
+        "body": [
+          "Mô hình embedding có thể hỗ trợ truy hồi hoặc phân tích đặc trưng mà không trực tiếp tạo mask nhiệm vụ. Phân đoạn có prompt có thể giảm công sức chú thích nhưng đưa thêm chính sách prompt và chọn. Mô hình ngữ nghĩa đã tinh chỉnh có thể dự đoán lặp lại nhưng kế thừa lỗi nhãn giả. Hãy so sánh vai trò này thay vì xếp hạng các đầu ra không cùng loại trên một leaderboard.",
+          "Khi suy luận, dùng model.eval() và torch.inference_mode. Sau khi xác nhận tương đương eager, SDPA và torch.compile có thể tăng tốc encoder nặng attention. Đo chi phí lần gọi đầu, độ trễ sau khởi động, bộ nhớ và độ chồng lấn vì độ chính xác thấp hơn hoặc biên dịch có thể đổi biên mask. Ghi giấy phép mô hình ngoài và hạn chế trong model card cùng mọi kết quả công bố."
+        ],
+        "code": { "title": "Xác minh logit mask đã biên dịch" }
+      }
+    ],
+    "modern": [
+      {
+        "topic": "Tăng cường theo cặp",
+        "book": "Các notebook chuẩn bị ảnh CT và mask để tinh chỉnh bằng logic Dataset rõ ràng.",
+        "current": "Dùng torchvision.transforms.v2 và tv_tensors.Mask cho các cặp 2D được hỗ trợ",
+        "reason": "API v2 được khuyến nghị áp dụng cùng hình học ngẫu nhiên cho ảnh và mask ngữ nghĩa trong khi điều phối theo kiểu đầu vào."
+      },
+      {
+        "topic": "Suy luận",
+        "book": "Ví dụ mô hình nền tảng chạy forward pass và trực quan hóa mask.",
+        "current": "Dùng model.eval() cùng torch.inference_mode()",
+        "reason": "Chế độ đánh giá điều khiển mô-đun như dropout, còn chế độ suy luận tắt việc ghi sổ autograd và có thể giảm overhead."
+      },
+      {
+        "topic": "Hiệu năng attention",
+        "book": "Các package mô hình nền tảng bên ngoài cung cấp triển khai encoder riêng.",
+        "current": "Xác minh đầu ra eager trước khi tăng tốc bằng SDPA hoặc torch.compile",
+        "reason": "PyTorch hiện tại có thể tăng tốc mô hình nặng attention, nhưng phải đo tính tương đương mask, biên dịch lần gọi đầu, độ chính xác và hành vi đồ thị."
+      },
+      {
+        "topic": "Nhãn giám sát được sinh",
+        "book": "Mô hình có prompt giúp tạo cặp ảnh/mask cho tinh chỉnh sau này.",
+        "current": "Đánh phiên bản mask được sinh như nhãn giả với nguồn gốc đầy đủ",
+        "reason": "Phiên bản mô hình, prompt, tiền xử lý, quy tắc chọn và danh tính nguồn quyết định mask và phải luôn kiểm toán được."
+      }
+    ],
+    "notebookLinks": [
+      { "slug": "p2ch15--p2ch15_explore_data", "reason": "Xem lại lát CT lấy tâm theo ứng viên và hình học trước khi đưa mô hình phân đoạn ngoài vào." },
+      { "slug": "p2ch15--sandbox", "reason": "Khảo sát đường huấn luyện phân đoạn gốc và thử nghiệm loss Dice trên batch thật." },
+      { "slug": "p2ch15--1_segment_example", "reason": "Sinh mask tự động trên ảnh thông thường và khảo sát cấu trúc cùng độ chồng lấn của chúng." },
+      { "slug": "p2ch15--2_point_prompt", "reason": "So sánh dự đoán theo prompt điểm và trực quan hóa điểm đã chọn cùng mask kết quả." },
+      { "slug": "p2ch15--3_segment_ct_slice", "reason": "Áp dụng pipeline prompt cho lát CT đã chuẩn hóa trong khi kiểm toán phép đổi tọa độ." },
+      { "slug": "p2ch15--4_create_dataset", "reason": "Sinh bản ghi ảnh/mask, metadata và Dataset để tinh chỉnh về sau." },
+      { "slug": "p2ch15--5_fine_tuning", "reason": "Tinh chỉnh bộ phân đoạn ngữ nghĩa và khảo sát processor, loss, optimizer cùng vòng lặp TensorBoard." },
+      { "slug": "p2ch15--6_inference", "reason": "Tải lại bộ phân đoạn đã huấn luyện, resize logit đúng cách và so sánh dự đoán với mask." },
+      { "slug": "p2ch15--try_sam", "reason": "Đối chiếu một giao diện package khác cho xử lý kiểu SAM và suy luận pipeline." },
+      { "slug": "p2ch15--dino_model", "reason": "Nghiên cứu embedding ảnh như một khả năng mô hình nền tảng riêng thay vì bộ sinh mask." }
+    ],
+    "exercises": [
+      {
+        "title": "Kiểm thử các trường hợp biên của độ chồng lấn",
+        "prompt": "Triển khai kiểm thử Dice và IoU cho chồng lấn hoàn hảo, mask rời nhau, chồng lấn một phần, nhãn đích rỗng, dự đoán rỗng và cả hai rỗng. Nêu chính sách rút gọn và mask rỗng.",
+        "success": "mọi giá trị kỳ vọng được suy ra bằng tay và triển khai luôn hữu hạn với hành vi gradient đúng cho loss huấn luyện"
+      },
+      {
+        "title": "Đo độ nhạy prompt",
+        "prompt": "Di chuyển prompt điểm trên một lưới quanh ít nhất mười ứng viên đã rà soát. Ghi khoảng cách prompt, mask được chọn, Dice/IoU và thất bại hoàn toàn.",
+        "success": "báo cáo định lượng độ nhạy và giữ mọi danh tính nguồn, tọa độ đã biến đổi cùng phiên bản mô hình"
+      },
+      {
+        "title": "Kiểm toán một bản phát hành nhãn giả",
+        "prompt": "Rà soát tập phân tầng mask được sinh, phân loại kiểu thất bại, áp dụng một quy tắc lọc có phiên bản rồi chạy so sánh tinh chỉnh nhỏ trước và sau lọc.",
+        "success": "cách chia vẫn rời nhau theo danh tính, nguồn gốc đầy đủ và kết luận tách chất lượng mask khỏi chất lượng mô hình hạ nguồn"
+      }
+    ],
+    "references": [
+      { "type": "Tài liệu tham khảo giảng dạy", "title": "Học PyTorch cho Học sâu" },
+      { "type": "PyTorch chính thức", "title": "TorchVision transforms v2" },
+      { "type": "PyTorch chính thức", "title": "Bắt đầu với transforms v2" },
+      { "type": "PyTorch chính thức", "title": "BCEWithLogitsLoss" },
+      { "type": "PyTorch chính thức", "title": "Các mô hình phân đoạn ngữ nghĩa TorchVision" },
+      { "type": "PyTorch chính thức", "title": "Tăng tốc Segment Anything" },
+      { "type": "Tài liệu mô hình gốc", "title": "Segment Anything" },
+      { "type": "Tài liệu mô hình gốc", "title": "DINOv2" }
+    ]
+  },
+  "notebooks": [
+    {
+      "slug": "p2ch15--1_segment_example",
+      "title": "Ví dụ phân đoạn",
+      "summary": "Chạy ví dụ phân đoạn đầu tiên và khảo sát các mask được trả về.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Ví dụ phân đoạn. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["thí nghiệm Python"], "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 3, "concepts": ["nhập thư viện", "trực quan hóa"], "explanation": "Ô 3 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 4, "concepts": ["nhập thư viện", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 4 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 5, "concepts": ["nạp dữ liệu"], "explanation": "Ô 5 nạp hoặc tổ chức dữ liệu." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["hình dạng tensor"], "explanation": "Ô 7 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["hình dạng tensor"], "explanation": "Ô 9 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 10, "concepts": ["trực quan hóa", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `plot_mask`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 11, "concepts": ["nhập thư viện", "trực quan hóa", "khuếch tán"], "explanation": "Ô này định nghĩa `plot_original_image_with_masks`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 12, "concepts": ["thí nghiệm Python"], "explanation": "Ô 12 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 13, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch15--2_point_prompt",
+      "title": "Prompt điểm",
+      "summary": "Dẫn hướng phân đoạn bằng prompt điểm tiền cảnh và hậu cảnh.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Prompt điểm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "trực quan hóa", "đặt trên thiết bị"], "explanation": "Ô 2 trực quan hóa giá trị trung gian hoặc cuối. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 3, "concepts": ["nhập thư viện", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 3 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 4, "concepts": ["nạp dữ liệu"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["hình dạng tensor"], "explanation": "Ô 8 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 9, "concepts": ["trực quan hóa", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `plot_mask_with_point`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 10, "concepts": ["trực quan hóa", "khuếch tán"], "explanation": "Ô này định nghĩa `plot_original_image_with_masks`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 11, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch15--3_segment_ct_slice",
+      "title": "Phân đoạn lát CT",
+      "summary": "Áp dụng mô hình phân đoạn cho một lát CT y khoa.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Phân đoạn lát CT. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu", "trực quan hóa", "đặt trên thiết bị"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu rồi trực quan hóa giá trị trung gian hoặc cuối. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["nạp dữ liệu"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu." },
+        { "number": 5, "concepts": ["hình dạng tensor"], "explanation": "Ô 5 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["hình dạng tensor", "trực quan hóa", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `add_point`, `plot_single_slice`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 9, "concepts": ["nhập thư viện", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 9 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 10, "concepts": ["hình dạng tensor"], "explanation": "Ô 10 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 11, "concepts": ["hình dạng tensor", "tiền xử lý", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `normalize_tensor`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 12, "concepts": ["tiền xử lý"], "explanation": "Ô 12 chuyển đầu vào sang dạng sẵn sàng cho mô hình." },
+        { "number": 13, "concepts": ["lan truyền thuận"], "explanation": "Ô 13 đưa dữ liệu qua mô hình." },
+        { "number": 14, "concepts": ["trực quan hóa", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `plot_mask_with_point`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 15, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." },
+        { "number": 16, "concepts": ["trực quan hóa", "khuếch tán"], "explanation": "Ô này định nghĩa `plot_original_image_with_masks`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." }
+      ]
+    },
+    {
+      "slug": "p2ch15--4_create_dataset",
+      "title": "Tạo Dataset",
+      "summary": "Tạo metadata cho cặp ảnh CT và mask phục vụ tinh chỉnh.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tạo Dataset. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu", "tiền xử lý", "trực quan hóa", "đặt trên thiết bị"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu, chuyển đầu vào sang dạng sẵn sàng cho mô hình rồi trực quan hóa giá trị trung gian hoặc cuối. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["nạp dữ liệu"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu." },
+        { "number": 5, "concepts": ["nhập thư viện", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 5 đưa dữ liệu qua mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 6, "concepts": ["nạp dữ liệu", "tiền xử lý", "lan truyền thuận"], "explanation": "Ô này định nghĩa `normalize_tensor`, `generate_ct_images_and_masks`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["nạp dữ liệu"], "explanation": "Ô này định nghĩa `FineTuningDataset`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 10, "concepts": ["thí nghiệm Python"], "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 11, "concepts": ["nạp dữ liệu"], "explanation": "Ô 11 nạp hoặc tổ chức dữ liệu." }
+      ]
+    },
+    {
+      "slug": "p2ch15--5_fine_tuning",
+      "title": "Tinh chỉnh",
+      "summary": "Tinh chỉnh mô hình phân đoạn trên các ví dụ y khoa đã chuẩn bị.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Tinh chỉnh. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu", "tiền xử lý", "đặt trên thiết bị"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 3, "concepts": ["nhập thư viện", "nạp dữ liệu"], "explanation": "Ô 3 nạp hoặc tổ chức dữ liệu." },
+        { "number": 4, "concepts": ["nhập thư viện", "tiền xử lý", "mô hình huấn luyện sẵn", "đặt trên thiết bị"], "explanation": "Ô 4 chuyển đầu vào sang dạng sẵn sàng cho mô hình rồi dựng mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 5, "concepts": ["tối ưu hóa"], "explanation": "Ô 5 cập nhật các tham số đã học." },
+        { "number": 6, "concepts": ["hình dạng tensor", "nạp dữ liệu", "lan truyền thuận", "cơ chế chú ý", "token hóa", "đặt trên thiết bị"], "explanation": "Ô này định nghĩa `encode_inputs_for_model`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 7, "concepts": ["nhập thư viện", "lan truyền thuận", "hàm mất mát", "tối ưu hóa", "vi phân tự động", "đánh giá", "cơ chế chú ý", "token hóa"], "explanation": "Ô 7 đưa dữ liệu qua mô hình, đo sai số dự đoán rồi cập nhật các tham số đã học." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["mô hình huấn luyện sẵn"], "explanation": "Ô 9 dựng mô hình." }
+      ]
+    },
+    {
+      "slug": "p2ch15--6_inference",
+      "title": "Suy luận",
+      "summary": "Tải mô hình đã tinh chỉnh và so sánh dự đoán với ground truth.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Suy luận. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu", "tiền xử lý", "đặt trên thiết bị"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu rồi chuyển đầu vào sang dạng sẵn sàng cho mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 3, "concepts": ["mô hình huấn luyện sẵn", "đặt trên thiết bị"], "explanation": "Ô 3 dựng mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng." },
+        { "number": 4, "concepts": ["nạp dữ liệu"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["nạp dữ liệu", "lan truyền thuận", "đánh giá", "cơ chế chú ý", "đặt trên thiết bị"], "explanation": "Ô này định nghĩa `inference`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 7, "concepts": ["lan truyền thuận"], "explanation": "Ô 7 đưa dữ liệu qua mô hình." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch15--dino_model",
+      "title": "Mô hình DINO",
+      "summary": "Khảo sát mô hình biểu diễn thuộc họ DINO được dùng trong các thí nghiệm của chương.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "nạp dữ liệu", "tiền xử lý", "mô hình huấn luyện sẵn", "lan truyền thuận", "cơ chế chú ý"], "explanation": "Ô 1 nạp hoặc tổ chức dữ liệu, chuyển đầu vào sang dạng sẵn sàng rồi dựng mô hình." },
+        { "number": 2, "concepts": ["lan truyền thuận"], "explanation": "Ô 2 đưa dữ liệu qua mô hình." },
+        { "number": 3, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    },
+    {
+      "slug": "p2ch15--p2ch15_explore_data",
+      "title": "P2ch15 Khám phá dữ liệu",
+      "summary": "Khám phá các lát CT và mask được dùng trong chương phân đoạn.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2ch15 Khám phá dữ liệu. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện", "nạp dữ liệu"], "explanation": "Ô 2 nạp hoặc tổ chức dữ liệu." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["thí nghiệm Python"], "explanation": "Ô 4 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["nạp dữ liệu"], "explanation": "Ô 6 nạp hoặc tổ chức dữ liệu." },
+        { "number": 7, "concepts": ["hình dạng tensor"], "explanation": "Ô 7 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 8, "concepts": ["nhập thư viện", "hình dạng tensor", "trực quan hóa", "cơ chế chú ý"], "explanation": "Ô này định nghĩa `plot_single_slice`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 9, "concepts": ["thí nghiệm Python"], "explanation": "Ô 9 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 10, "concepts": ["thí nghiệm Python"], "explanation": "Ô 10 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 11, "concepts": ["hình dạng tensor"], "explanation": "Ô 11 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 12, "concepts": ["nhập thư viện", "trực quan hóa"], "explanation": "Ô 12 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 13, "concepts": ["hình dạng tensor", "trực quan hóa"], "explanation": "Ô này định nghĩa `plot_slices`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 14, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của P2ch15 Khám phá dữ liệu. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 15, "concepts": ["nhập thư viện", "hình dạng tensor", "nạp dữ liệu", "trực quan hóa"], "explanation": "Ô này định nghĩa `showCandidate`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 16, "concepts": ["thí nghiệm Python"], "explanation": "Ô 16 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 17, "concepts": ["thí nghiệm Python"], "explanation": "Ô 17 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." }
+      ]
+    },
+    {
+      "slug": "p2ch15--sandbox",
+      "title": "Khu vực thử nghiệm",
+      "summary": "Không gian nháp của chương để thử các ý tưởng trung gian, hình dạng tensor và API bên ngoài mạch notebook chính.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 2, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Khu vực thử nghiệm. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["nạp dữ liệu"], "explanation": "Ô này định nghĩa `get_dl_subset`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["thí nghiệm Python"], "explanation": "Ô 6 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 7, "concepts": ["thí nghiệm Python"], "explanation": "Ô 7 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 8, "concepts": ["thí nghiệm Python"], "explanation": "Ô 8 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 9, "concepts": ["hình dạng tensor"], "explanation": "Ô 9 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 10, "concepts": ["hình dạng tensor", "lan truyền thuận", "hàm mất mát"], "explanation": "Ô này định nghĩa `dice_loss`. Định nghĩa đóng gói hành vi lặp lại để các ô sau có thể tạo, huấn luyện hoặc đánh giá mà không lặp chi tiết triển khai." }
+      ]
+    },
+    {
+      "slug": "p2ch15--try_sam",
+      "title": "Thử SAM",
+      "summary": "Thử nghiệm tương tác với các dự đoán Segment Anything.",
+      "cells": [
+        { "number": 1, "concepts": ["nhập thư viện", "hình dạng tensor", "nạp dữ liệu", "tiền xử lý", "mô hình huấn luyện sẵn", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 1 nạp hoặc tổ chức dữ liệu, chuyển đầu vào sang dạng sẵn sàng rồi dựng mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 2, "concepts": ["thí nghiệm Python"], "explanation": "Ô 2 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 3, "concepts": ["thí nghiệm Python"], "explanation": "Ô 3 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 4, "concepts": ["nhập thư viện", "hình dạng tensor", "nạp dữ liệu", "tiền xử lý", "mô hình huấn luyện sẵn", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 4 nạp hoặc tổ chức dữ liệu, chuyển đầu vào sang dạng sẵn sàng rồi dựng mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 5, "concepts": ["thí nghiệm Python"], "explanation": "Ô 5 tiếp tục thí nghiệm bằng cách tính toán hoặc kiểm tra giá trị trung gian tiếp theo." },
+        { "number": 6, "concepts": ["nhập thư viện"], "explanation": "Ô này nạp các thư viện dùng cho giai đoạn tiếp theo của Thử SAM. Việc gom các lệnh import giúp những ô sau tập trung vào chính thí nghiệm." },
+        { "number": 7, "concepts": ["nhập thư viện", "hình dạng tensor", "nạp dữ liệu", "tiền xử lý", "mô hình huấn luyện sẵn", "lan truyền thuận", "đặt trên thiết bị"], "explanation": "Ô 7 nạp hoặc tổ chức dữ liệu, chuyển đầu vào sang dạng sẵn sàng rồi dựng mô hình. Nó cũng đặt tensor hoặc mô-đun lên accelerator được chọn khi khả dụng. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 8, "concepts": ["hình dạng tensor"], "explanation": "Ô 8 định hình lại hoặc kiểm tra tensor để các chiều khớp phép toán kế tiếp. Hãy theo dõi các shape được in ra hoặc suy ra tại đây; chúng giải thích vì sao phép toán sau hợp lệ." },
+        { "number": 9, "concepts": ["nhập thư viện", "tiền xử lý", "mô hình huấn luyện sẵn"], "explanation": "Ô 9 chuyển đầu vào sang dạng sẵn sàng rồi dựng mô hình." },
+        { "number": 10, "concepts": ["nhập thư viện", "nạp dữ liệu"], "explanation": "Ô 10 nạp hoặc tổ chức dữ liệu." },
+        { "number": 11, "concepts": ["nhập thư viện", "trực quan hóa", "khuếch tán"], "explanation": "Ô 11 trực quan hóa các giá trị trung gian hoặc cuối cùng." },
+        { "number": 12, "concepts": ["cấu trúc notebook"], "explanation": "Ô trống có chủ đích này ngăn cách các giai đoạn của notebook và dành chỗ cho một thí nghiệm." }
+      ]
+    }
+  ]
+}

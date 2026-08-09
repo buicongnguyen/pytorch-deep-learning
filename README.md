@@ -10,9 +10,16 @@ The Atlas provides:
 - chapter tables of contents, runnable examples, update notes, and exercises;
 - a page for every upstream Jupyter notebook;
 - plain-language explanations for each code cell;
+- complete English and Vietnamese routes for all lessons and notebook readers;
 - direct links to the pinned source and Google Colab;
-- search, dark mode, responsive navigation, and copyable code;
+- locale-aware search (including Vietnamese queries without diacritics), dark
+  mode, responsive navigation, and copyable code;
 - deterministic coverage and GitHub Pages deployment checks.
+
+English remains at the original URLs. The Vietnamese course starts at
+`/pytorch-deep-learning/vi/`, with reciprocal language links on equivalent
+pages. Both versions share the same audited Python examples, notebook slugs,
+source URLs, and section anchors; only learner-facing text is localized.
 
 The lesson format acknowledges [Learn PyTorch for Deep
 Learning](https://www.learnpytorch.io/) as a teaching reference. Current API
@@ -32,6 +39,11 @@ Node.js 24 or newer is required.
 npm run build
 npm start
 ```
+
+The build produces 81 logical pages in each language, two 184-record search
+indexes, reciprocal `hreflang` metadata, and one bilingual sitemap. Validation
+requires all 17 Vietnamese chapter overlays and all 810 localized notebook-cell
+explanations before the site can ship.
 
 To refresh the catalog from a local checkout:
 
