@@ -19,6 +19,8 @@ const canonicalDiagrams = await loadDiagrams(root, "en");
 const viDiagrams = await loadDiagrams(root, "vi");
 const support = JSON.parse(await readFile(path.join(root, "content", "learning-support.json"), "utf8"));
 const viSupport = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "learning-support.json"), "utf8"));
+const setup = JSON.parse(await readFile(path.join(root, "content", "setup.json"), "utf8"));
+const viSetup = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "setup.json"), "utf8"));
 const sourceOnly = process.argv.includes("--source-only");
 const failures = [];
 const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810, locales: 2 };
@@ -143,6 +145,33 @@ if (support.chapters?.length !== 17 || JSON.stringify(support.chapters.map((item
 if (support.chapters?.some((item) => !item.level || item.time?.length !== 3 || !item.prerequisites?.length || item.checkpoints?.length !== 2)) failures.push("Every chapter needs level, prerequisites, a three-part time plan, and two checkpoints");
 if (support.glossary?.length !== 25) failures.push("Expected 25 glossary terms");
 if (viSupport.tracks?.length !== support.tracks.length || viSupport.chapters?.length !== support.chapters.length || viSupport.glossary?.length !== support.glossary.length) failures.push("Vietnamese learning support must preserve track, chapter, and glossary parity");
+if (!/^\d{4}-\d{2}-\d{2}$/.test(setup.reviewedAt || "") || viSetup.reviewedAt !== setup.reviewedAt) failures.push("Setup guide needs one shared ISO review date");
+for (const field of ["title", "shortTitle", "eyebrow", "summary"]) requireTranslation(setup[field], viSetup[field], `Vietnamese setup ${field}`);
+requireArrayParity(setup.sections || [], viSetup.sections || [], "Vietnamese setup sections");
+if (JSON.stringify(setup.sections?.map((section) => section.id)) !== JSON.stringify(viSetup.sections?.map((section) => section.id))) failures.push("Vietnamese setup section IDs and order must match English");
+for (const [index, section] of (setup.sections || []).entries()) {
+  const translated = viSetup.sections?.[index];
+  for (const field of ["title", "summary"]) requireTranslation(section[field], translated?.[field], `Vietnamese setup ${section.id} ${field}`);
+  requireArrayParity(section.body || [], translated?.body || [], `Vietnamese setup ${section.id} body`);
+  for (const [bodyIndex, paragraph] of (section.body || []).entries()) requireTranslation(paragraph, translated?.body?.[bodyIndex], `Vietnamese setup ${section.id} paragraph ${bodyIndex + 1}`);
+  requireArrayParity(section.commands || [], translated?.commands || [], `Vietnamese setup ${section.id} commands`);
+  for (const [commandIndex, command] of (section.commands || []).entries()) {
+    const translatedCommand = translated?.commands?.[commandIndex];
+    requireTranslation(command.title, translatedCommand?.title, `Vietnamese setup ${section.id} command ${commandIndex + 1}`);
+    if (command.language !== translatedCommand?.language || command.source !== translatedCommand?.source) failures.push(`Vietnamese setup ${section.id}: command source or language changed`);
+  }
+  if (section.callout) {
+    requireTranslation(section.callout.title, translated?.callout?.title, `Vietnamese setup ${section.id} callout title`);
+    requireTranslation(section.callout.body, translated?.callout?.body, `Vietnamese setup ${section.id} callout body`);
+  }
+  if (JSON.stringify(section.download?.path || null) !== JSON.stringify(translated?.download?.path || null)) failures.push(`Vietnamese setup ${section.id}: download path changed`);
+  if (section.download) requireTranslation(section.download.label, translated?.download?.label, `Vietnamese setup ${section.id} download label`);
+}
+requireArrayParity(setup.references || [], viSetup.references || [], "Vietnamese setup references");
+for (const [index, reference] of (setup.references || []).entries()) {
+  requireTranslation(reference.title, viSetup.references?.[index]?.title, `Vietnamese setup reference ${index + 1}`);
+  if (reference.url !== viSetup.references?.[index]?.url || !reference.url.startsWith("https://")) failures.push(`Setup reference ${index + 1}: URL must be unchanged HTTPS`);
+}
 for (const [index, item] of support.chapters.entries()) {
   const lesson = lessons.find((candidate) => candidate.chapter === item.chapter);
   for (const checkpoint of item.checkpoints) if (!lesson?.sections.some((section) => section.id === checkpoint.after)) failures.push(`Chapter ${item.chapter}: checkpoint target ${checkpoint.after} is missing`);
@@ -318,12 +347,12 @@ if (sourceOnly) {
   process.exit(0);
 }
 
-for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", `${localePrefix("vi")}index.html`, `${localePrefix("vi")}search.json`, "audit.json", "manifest.webmanifest", "service-worker.js", "assets/styles.css", "assets/app.js"]) {
+for (const file of ["index.html", "setup/index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", `${localePrefix("vi")}index.html`, `${localePrefix("vi")}setup/index.html`, `${localePrefix("vi")}search.json`, "downloads/verify-environment.py", "audit.json", "manifest.webmanifest", "service-worker.js", "assets/styles.css", "assets/app.js"]) {
   try { await access(path.join(dist, file)); } catch { failures.push(`Missing dist/${file}`); }
 }
 try {
   const audit = JSON.parse(await readFile(path.join(dist, "audit.json"), "utf8"));
-  const featureCounts = { lessonCodeBlocks: 94, learningTracks: 5, learningCheckpoints: 34, glossaryTerms: 25, diagrams: 15, dataVisuals: 9, chapterRunners: 17 };
+  const featureCounts = { lessonCodeBlocks: 94, learningTracks: 5, learningCheckpoints: 34, glossaryTerms: 25, diagrams: 15, dataVisuals: 9, chapterRunners: 17, setupGuides: 1 };
   for (const [key, value] of Object.entries(featureCounts)) if (audit[key] !== value) failures.push(`Audit expected ${key}=${value}, found ${audit[key]}`);
 } catch (error) { failures.push(`Invalid dist/audit.json: ${error.message}`); }
 try {
@@ -346,6 +375,12 @@ for (const locale of ["en", "vi"]) {
     const html = await readFile(path.join(localeRoot, "index.html"), "utf8");
     validateLocalizedHead(html, locale, "", `${locale} landing page`);
   } catch { failures.push(`Missing ${locale} landing page`); }
+  try {
+    const html = await readFile(path.join(localeRoot, "setup", "index.html"), "utf8");
+    validateLocalizedHead(html, locale, "setup/", `${locale} setup page`);
+    if ((html.match(/class="lesson-code setup-command"/g) || []).length !== setup.sections.reduce((sum, section) => sum + section.commands.length, 0)) failures.push(`${locale} setup page: command count differs`);
+    if (!html.includes("downloads/verify-environment.py")) failures.push(`${locale} setup page: environment-test download is missing`);
+  } catch { failures.push(`Missing ${locale} setup page`); }
   for (const chapter of catalog.chapters) {
     const file = path.join(localeRoot, "chapters", String(chapter.number).padStart(2, "0"), "index.html");
     try {
@@ -372,19 +407,19 @@ for (const locale of ["en", "vi"]) {
     } catch { failures.push(`Missing ${locale} notebook page ${notebook.slug}`); }
   }
 }
-const expectedSearchRecords = expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0) + support.glossary.length + Object.keys(enSyntax.entries).length;
+const expectedSearchRecords = 1 + expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0) + support.glossary.length + Object.keys(enSyntax.entries).length;
 const enSearch = JSON.parse(await readFile(path.join(dist, "search.json"), "utf8"));
 const viSearch = JSON.parse(await readFile(path.join(dist, localePrefix("vi"), "search.json"), "utf8"));
 if (enSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} English search records, found ${enSearch.length}`);
 if (viSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} Vietnamese search records, found ${viSearch.length}`);
 if (viSearch.some((item) => !item.url.startsWith(localizedRoute("vi")))) failures.push("Vietnamese search contains an English internal route");
 const sitemap = await readFile(path.join(dist, "sitemap.xml"), "utf8");
-if ((sitemap.match(/<url>/g) || []).length !== 164) failures.push("Sitemap must contain 82 route pairs (164 URLs)");
-if ((sitemap.match(/hreflang="vi"/g) || []).length !== 164) failures.push("Every sitemap URL needs a Vietnamese alternate");
-const logicalRoutes = ["", "glossary/", ...catalog.chapters.map((chapter) => `chapters/${String(chapter.number).padStart(2, "0")}/`), ...catalog.notebooks.map((notebook) => `notebooks/${notebook.slug}/`)];
+if ((sitemap.match(/<url>/g) || []).length !== 166) failures.push("Sitemap must contain 83 route pairs (166 URLs)");
+if ((sitemap.match(/hreflang="vi"/g) || []).length !== 166) failures.push("Every sitemap URL needs a Vietnamese alternate");
+const logicalRoutes = ["", "setup/", "glossary/", ...catalog.chapters.map((chapter) => `chapters/${String(chapter.number).padStart(2, "0")}/`), ...catalog.notebooks.map((notebook) => `notebooks/${notebook.slug}/`)];
 const expectedSitemapLocations = logicalRoutes.flatMap((logicalPath) => [localizedUrl("en", logicalPath), localizedUrl("vi", logicalPath)]).sort();
 const actualSitemapLocations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]).sort();
-if (JSON.stringify(actualSitemapLocations) !== JSON.stringify(expectedSitemapLocations)) failures.push("Sitemap locations do not exactly match the 81 English/Vietnamese route pairs");
+if (JSON.stringify(actualSitemapLocations) !== JSON.stringify(expectedSitemapLocations)) failures.push("Sitemap locations do not exactly match the 83 English/Vietnamese route pairs");
 
 async function htmlFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

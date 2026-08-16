@@ -1,0 +1,130 @@
+{
+  "title": "Set up your PyTorch workspace",
+  "shortTitle": "Setup & run",
+  "eyebrow": "Start here before Chapter 1",
+  "summary": "Create an isolated Python environment, install the course stack, verify PyTorch, and learn the two ways you will run code in this book.",
+  "reviewedAt": "2026-08-16",
+  "sections": [
+    {
+      "id": "create-environment",
+      "title": "Create one clean environment",
+      "summary": "An isolated environment prevents this course from changing packages used by your other Python projects.",
+      "body": [
+        "Install a supported 64-bit Python release first. Python 3.12 is a conservative choice for this course. Open a terminal in the folder where you keep projects, create the environment once, and activate it whenever you return.",
+        "The prompt normally shows (.venv) after activation. Use python -m pip instead of a bare pip command so the installer definitely belongs to the active Python interpreter."
+      ],
+      "commands": [
+        {
+          "title": "Windows PowerShell",
+          "language": "powershell",
+          "source": "py -3.12 -m venv .venv\n.\\.venv\\Scripts\\Activate.ps1\npython -m pip install --upgrade pip"
+        },
+        {
+          "title": "macOS or Linux",
+          "language": "bash",
+          "source": "python3.12 -m venv .venv\nsource .venv/bin/activate\npython -m pip install --upgrade pip"
+        }
+      ],
+      "callout": {
+        "title": "Activation blocked in PowerShell?",
+        "body": "Read the Python venv reference below. If local policy blocks Activate.ps1, you can still call .venv\\Scripts\\python.exe directly instead of weakening a machine-wide security policy."
+      }
+    },
+    {
+      "id": "install-pytorch",
+      "title": "Install PyTorch and JupyterLab",
+      "summary": "Begin with a known course-compatible stack; choose the official accelerator build when you need GPU support.",
+      "body": [
+        "The lessons are reviewed for PyTorch 2.13 and TorchVision 0.28. The command below installs those versions plus JupyterLab. A CPU installation is sufficient for Chapters 1–7 and for understanding every concept, although larger models will run slowly.",
+        "For NVIDIA CUDA, AMD ROCm, or Intel XPU, open PyTorch's Start Locally page and select your operating system, Pip, Python, and compute platform. Use the generated command rather than guessing a CUDA wheel URL."
+      ],
+      "commands": [
+        {
+          "title": "Course packages",
+          "language": "bash",
+          "source": "python -m pip install \"torch==2.13.*\" \"torchvision==0.28.*\" jupyterlab\npython -m pip check"
+        }
+      ],
+      "callout": {
+        "title": "Do not install every optional package yet",
+        "body": "Some later chapters need medical-imaging, export, or quantization packages. Install those only when the relevant chapter asks for them; this keeps the base environment smaller and failures easier to diagnose."
+      }
+    },
+    {
+      "id": "verify-installation",
+      "title": "Run the environment smoke test",
+      "summary": "Confirm the interpreter, library versions, tensor math, gradients, and available accelerator before downloading large data.",
+      "body": [
+        "Download the verification script or save the code below as verify-environment.py. Run it from the activated environment. A successful result ends with environment check: PASS.",
+        "CUDA available: False is not an installation failure on a CPU-only computer. It only means CUDA examples must use CPU or be skipped."
+      ],
+      "commands": [
+        {
+          "title": "Run the supplied test",
+          "language": "bash",
+          "source": "python verify-environment.py"
+        },
+        {
+          "title": "What the test executes",
+          "language": "python",
+          "source": "import torch\n\nprint(\"PyTorch:\", torch.__version__)\nprint(\"CUDA available:\", torch.cuda.is_available())\n\nx = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)\nloss = (x.square()).mean()\nloss.backward()\n\nassert x.grad is not None\nassert torch.isfinite(x.grad).all()\nprint(\"gradient:\", x.grad)\nprint(\"environment check: PASS\")"
+        }
+      ],
+      "download": {
+        "label": "Download verify-environment.py",
+        "path": "downloads/verify-environment.py"
+      }
+    },
+    {
+      "id": "run-notebooks",
+      "title": "Run the book notebooks",
+      "summary": "Clone the official notebook repository beside this course, start JupyterLab, and select the environment you just tested.",
+      "body": [
+        "The .ipynb files are interactive notebooks, not ordinary Python scripts. Clone the upstream repository with Git SSH, enter its directory, and launch JupyterLab. Open a notebook in the browser and run the current cell with Shift+Enter.",
+        "In JupyterLab, confirm that the selected kernel belongs to .venv. Run cells from top to bottom because later cells often depend on imports, variables, or downloaded data created earlier. Restart the kernel and run all cells when you want a reproducible check."
+      ],
+      "commands": [
+        {
+          "title": "Clone and launch",
+          "language": "bash",
+          "source": "git clone git@github.com:deep-learning-with-pytorch/dlwpt-code-2e.git\ncd dlwpt-code-2e\njupyter lab"
+        }
+      ],
+      "callout": {
+        "title": "SSH authentication",
+        "body": "GitHub SSH cloning requires an SSH key registered with your GitHub account. Test it with ssh -T git@github.com. If authentication is not configured, follow GitHub's SSH-key guide before cloning."
+      }
+    },
+    {
+      "id": "run-and-test-code",
+      "title": "Run scripts and test your changes",
+      "summary": "Use a short feedback loop: run one example, inspect shapes and values, then assert the behavior you expect.",
+      "body": [
+        "Every chapter provides a downloadable .py runner. Calling it without an example name lists the available examples; pass one name to run that example. Some examples deliberately require chapter data, an accelerator, or a distributed launcher, so read the contract above the code first.",
+        "When modifying code, add shape, dtype, device, and finite-value assertions near the boundary where data enters the model. For notebooks, use Restart Kernel and Run All as the final test. Contributors to this website can also run the full content and accessibility validation commands below."
+      ],
+      "commands": [
+        {
+          "title": "Run a chapter example",
+          "language": "bash",
+          "source": "python chapter-06.py from-linear-to-network"
+        },
+        {
+          "title": "Validate a local website checkout",
+          "language": "bash",
+          "source": "npm install\nnpm run build\npython scripts/check_snippets.py --execute"
+        }
+      ],
+      "callout": {
+        "title": "A useful debugging order",
+        "body": "First confirm the active Python path and package versions. Then reproduce the failure with the smallest input. Print or assert tensor shape, dtype, and device before investigating the model mathematics."
+      }
+    }
+  ],
+  "references": [
+    { "title": "PyTorch: Start Locally", "url": "https://docs.pytorch.org/get-started/locally/" },
+    { "title": "Python virtual environments", "url": "https://docs.python.org/3/library/venv.html" },
+    { "title": "Install and run JupyterLab", "url": "https://jupyter.org/install" },
+    { "title": "GitHub: Connect with SSH", "url": "https://docs.github.com/en/authentication/connecting-to-github-with-ssh" }
+  ]
+}

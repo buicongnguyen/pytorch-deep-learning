@@ -1,0 +1,130 @@
+{
+  "title": "Thiết lập môi trường PyTorch",
+  "shortTitle": "Cài đặt & chạy",
+  "eyebrow": "Bắt đầu ở đây trước Chương 1",
+  "summary": "Tạo môi trường Python riêng, cài bộ thư viện của khóa học, kiểm tra PyTorch và học hai cách chạy mã trong sách.",
+  "reviewedAt": "2026-08-16",
+  "sections": [
+    {
+      "id": "create-environment",
+      "title": "Tạo một môi trường sạch",
+      "summary": "Môi trường riêng giúp khóa học không làm thay đổi thư viện của các dự án Python khác.",
+      "body": [
+        "Trước tiên, hãy cài một bản Python 64-bit được hỗ trợ. Python 3.12 là lựa chọn ổn định cho khóa học này. Mở terminal tại thư mục chứa dự án, tạo môi trường một lần và kích hoạt lại mỗi khi học.",
+        "Sau khi kích hoạt, dấu nhắc thường hiển thị (.venv). Dùng python -m pip thay cho pip đơn lẻ để chắc chắn trình cài đặt thuộc đúng Python đang hoạt động."
+      ],
+      "commands": [
+        {
+          "title": "Windows PowerShell",
+          "language": "powershell",
+          "source": "py -3.12 -m venv .venv\n.\\.venv\\Scripts\\Activate.ps1\npython -m pip install --upgrade pip"
+        },
+        {
+          "title": "macOS hoặc Linux",
+          "language": "bash",
+          "source": "python3.12 -m venv .venv\nsource .venv/bin/activate\npython -m pip install --upgrade pip"
+        }
+      ],
+      "callout": {
+        "title": "PowerShell chặn lệnh kích hoạt?",
+        "body": "Hãy đọc tài liệu venv của Python bên dưới. Nếu chính sách cục bộ chặn Activate.ps1, bạn vẫn có thể gọi trực tiếp .venv\\Scripts\\python.exe thay vì nới lỏng chính sách bảo mật cho toàn máy."
+      }
+    },
+    {
+      "id": "install-pytorch",
+      "title": "Cài PyTorch và JupyterLab",
+      "summary": "Bắt đầu với bộ thư viện tương thích với khóa học; chọn bản tăng tốc chính thức khi cần GPU.",
+      "body": [
+        "Các bài học được rà soát cho PyTorch 2.13 và TorchVision 0.28. Lệnh dưới đây cài hai phiên bản đó cùng JupyterLab. Bản CPU đủ cho Chương 1–7 và để hiểu mọi khái niệm, dù mô hình lớn sẽ chạy chậm.",
+        "Với NVIDIA CUDA, AMD ROCm hoặc Intel XPU, hãy mở trang Start Locally của PyTorch rồi chọn hệ điều hành, Pip, Python và nền tảng tính toán. Dùng lệnh được trang tạo ra thay vì tự đoán URL của gói CUDA."
+      ],
+      "commands": [
+        {
+          "title": "Các gói của khóa học",
+          "language": "bash",
+          "source": "python -m pip install \"torch==2.13.*\" \"torchvision==0.28.*\" jupyterlab\npython -m pip check"
+        }
+      ],
+      "callout": {
+        "title": "Chưa cần cài mọi gói tùy chọn",
+        "body": "Một số chương sau cần gói xử lý ảnh y khoa, xuất mô hình hoặc lượng tử hóa. Chỉ cài chúng khi chương tương ứng yêu cầu để môi trường nền gọn hơn và lỗi dễ chẩn đoán hơn."
+      }
+    },
+    {
+      "id": "verify-installation",
+      "title": "Chạy bài kiểm tra môi trường",
+      "summary": "Xác nhận trình Python, phiên bản thư viện, phép toán tensor, gradient và bộ tăng tốc trước khi tải dữ liệu lớn.",
+      "body": [
+        "Tải tập lệnh kiểm tra hoặc lưu mã dưới đây thành verify-environment.py. Chạy nó trong môi trường đã kích hoạt. Kết quả thành công kết thúc bằng environment check: PASS.",
+        "CUDA available: False không phải lỗi cài đặt trên máy chỉ có CPU. Nó chỉ có nghĩa là ví dụ CUDA phải dùng CPU hoặc được bỏ qua."
+      ],
+      "commands": [
+        {
+          "title": "Chạy bài kiểm tra có sẵn",
+          "language": "bash",
+          "source": "python verify-environment.py"
+        },
+        {
+          "title": "Mã mà bài kiểm tra thực thi",
+          "language": "python",
+          "source": "import torch\n\nprint(\"PyTorch:\", torch.__version__)\nprint(\"CUDA available:\", torch.cuda.is_available())\n\nx = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)\nloss = (x.square()).mean()\nloss.backward()\n\nassert x.grad is not None\nassert torch.isfinite(x.grad).all()\nprint(\"gradient:\", x.grad)\nprint(\"environment check: PASS\")"
+        }
+      ],
+      "download": {
+        "label": "Tải verify-environment.py",
+        "path": "downloads/verify-environment.py"
+      }
+    },
+    {
+      "id": "run-notebooks",
+      "title": "Chạy notebook của sách",
+      "summary": "Clone kho notebook chính thức bên cạnh khóa học, khởi động JupyterLab và chọn môi trường vừa kiểm tra.",
+      "body": [
+        "Tệp .ipynb là notebook tương tác, không phải tập lệnh Python thông thường. Clone kho thượng nguồn bằng Git SSH, vào thư mục đó rồi khởi động JupyterLab. Mở notebook trong trình duyệt và chạy ô hiện tại bằng Shift+Enter.",
+        "Trong JupyterLab, xác nhận kernel được chọn thuộc .venv. Chạy các ô từ trên xuống dưới vì ô sau thường phụ thuộc vào import, biến hoặc dữ liệu tải xuống ở ô trước. Khi cần kiểm tra có thể tái lập, hãy khởi động lại kernel và chạy toàn bộ ô."
+      ],
+      "commands": [
+        {
+          "title": "Clone và khởi động",
+          "language": "bash",
+          "source": "git clone git@github.com:deep-learning-with-pytorch/dlwpt-code-2e.git\ncd dlwpt-code-2e\njupyter lab"
+        }
+      ],
+      "callout": {
+        "title": "Xác thực SSH",
+        "body": "Clone bằng GitHub SSH cần khóa SSH đã đăng ký với tài khoản GitHub. Kiểm tra bằng ssh -T git@github.com. Nếu chưa cấu hình xác thực, hãy làm theo hướng dẫn khóa SSH của GitHub trước khi clone."
+      }
+    },
+    {
+      "id": "run-and-test-code",
+      "title": "Chạy tập lệnh và kiểm tra thay đổi",
+      "summary": "Dùng vòng phản hồi ngắn: chạy một ví dụ, xem shape và giá trị, rồi khẳng định hành vi mong đợi.",
+      "body": [
+        "Mỗi chương cung cấp một tệp .py có thể tải xuống. Gọi tệp mà không có tên ví dụ để xem danh sách; truyền một tên để chạy ví dụ đó. Một số ví dụ chủ ý cần dữ liệu của chương, bộ tăng tốc hoặc trình khởi chạy phân tán, vì vậy hãy đọc hợp đồng phía trên mã trước.",
+        "Khi sửa mã, hãy thêm kiểm tra shape, dtype, device và giá trị hữu hạn gần ranh giới nơi dữ liệu đi vào mô hình. Với notebook, dùng Restart Kernel và Run All cho lần kiểm tra cuối. Người đóng góp cho trang web cũng có thể chạy các lệnh xác thực nội dung và khả năng tiếp cận bên dưới."
+      ],
+      "commands": [
+        {
+          "title": "Chạy một ví dụ của chương",
+          "language": "bash",
+          "source": "python chapter-06.py from-linear-to-network"
+        },
+        {
+          "title": "Xác thực bản sao trang web cục bộ",
+          "language": "bash",
+          "source": "npm install\nnpm run build\npython scripts/check_snippets.py --execute"
+        }
+      ],
+      "callout": {
+        "title": "Thứ tự gỡ lỗi hữu ích",
+        "body": "Trước tiên, xác nhận đường dẫn Python đang hoạt động và phiên bản gói. Sau đó tái hiện lỗi với đầu vào nhỏ nhất. In hoặc kiểm tra shape, dtype và device của tensor trước khi xem xét toán học của mô hình."
+      }
+    }
+  ],
+  "references": [
+    { "title": "PyTorch: Start Locally", "url": "https://docs.pytorch.org/get-started/locally/" },
+    { "title": "Môi trường ảo Python", "url": "https://docs.python.org/3/library/venv.html" },
+    { "title": "Cài đặt và chạy JupyterLab", "url": "https://jupyter.org/install" },
+    { "title": "GitHub: Kết nối bằng SSH", "url": "https://docs.github.com/en/authentication/connecting-to-github-with-ssh" }
+  ]
+}

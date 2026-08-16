@@ -233,6 +233,43 @@ h1, h2, h3, p { margin-top: 0; }
 @media (max-width: 360px) { .brand > span:last-child { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
 
+/* Environment setup guide */
+.setup-hero, .setup-layout { width: min(1180px, calc(100% - 4rem)); margin-inline: auto; }
+.setup-hero { padding: 2.5rem 0 2rem; border-bottom: 1px solid var(--line); }
+.setup-hero h1 { max-width: 850px; margin-bottom: .7rem; font-size: clamp(2.6rem, 6vw, 5rem); line-height: .98; letter-spacing: -.055em; }
+.setup-hero > p:not(.eyebrow) { max-width: 760px; margin-bottom: 1.2rem; color: var(--muted); font-size: 1.05rem; line-height: 1.7; }
+.setup-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: clamp(2rem, 5vw, 5rem); align-items: start; padding: 2rem 0 5rem; }
+.setup-toc { position: sticky; top: calc(var(--header) + 1.5rem); }
+.setup-toc > strong { display: block; margin-bottom: .7rem; color: var(--muted); font-size: var(--text-small); text-transform: uppercase; letter-spacing: .09em; }
+.setup-toc nav { display: grid; }
+.setup-toc a { display: grid; grid-template-columns: 2rem minmax(0, 1fr); gap: .3rem; padding: .55rem .6rem; border-left: 1px solid var(--line); color: var(--muted); font-size: var(--text-small); line-height: 1.45; text-decoration: none; }
+.setup-toc a:hover { border-color: var(--accent); background: var(--panel-2); color: var(--ink); }
+.setup-toc a span { color: var(--accent); font-family: "DM Mono"; }
+.setup-article { min-width: 0; }
+.setup-article > section { padding: 2.5rem 0; border-bottom: 1px solid var(--line); scroll-margin-top: calc(var(--header) + 1rem); }
+.setup-article > section:first-child { padding-top: 0; }
+.setup-article > section > header { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: .8rem; margin-bottom: 1rem; }
+.setup-article > section > header > span { color: var(--accent); font: 500 var(--text-meta) "DM Mono"; }
+.setup-article h2 { margin-bottom: .35rem; font-size: clamp(1.8rem, 4vw, 3rem); line-height: 1.05; letter-spacing: -.045em; }
+.setup-article header p, .setup-prose p { max-width: 780px; color: var(--muted); font-size: 1rem; line-height: 1.75; }
+.setup-command, .setup-article .lesson-callout { margin-left: 38px; }
+.setup-command + .setup-command { margin-top: .75rem; }
+.setup-download { display: inline-flex; margin: 1rem 0 0 38px; padding: .65rem .85rem; border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); font-size: var(--text-small); font-weight: 700; text-decoration: none; }
+.setup-references ul { display: grid; gap: .55rem; padding: 0; list-style: none; }
+.setup-references a { display: flex; justify-content: space-between; gap: 1rem; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); text-decoration: none; }
+.setup-references a:hover { border-color: var(--accent); }
+.setup-references b { color: var(--accent); }
+.setup-next { padding-top: 1.5rem; text-align: right; }
+
+@media (max-width: 700px) {
+  .setup-hero, .setup-layout { width: min(100% - 2rem, 1180px); }
+  .setup-hero { padding-top: 1.6rem; }
+  .setup-hero h1 { font-size: clamp(2.2rem, 11vw, 3.2rem); }
+  .setup-layout { display: block; padding-top: 1.2rem; }
+  .setup-toc { position: static; margin-bottom: 1.2rem; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .setup-command, .setup-article .lesson-callout, .setup-download { margin-left: 0; }
+}
+
 /* Guided-course layer */
 .track-section, .chapter-study-plan, .glossary-hero, .glossary-grid { width: min(1180px, calc(100% - 4rem)); margin-inline: auto; }
 .track-section { padding: 2rem 0 5rem; }

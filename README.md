@@ -6,6 +6,7 @@ repository accompanying *Deep Learning with PyTorch, Second Edition*.
 The Atlas provides:
 
 - a seventeen-chapter roadmap plus five goal-based learning tracks;
+- a bilingual Chapter 00 guide for installing PyTorch, running notebooks and scripts, and testing the environment;
 - original long-form lessons reviewed against PyTorch 2.13;
 - chapter prerequisites, time plans, checkpoints, runnable examples,
   expected-result guidance, update notes, and progressively guided exercises;

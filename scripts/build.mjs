@@ -16,6 +16,8 @@ const canonicalDiagrams = await loadDiagrams(root, "en");
 const viDiagramOverlay = await loadDiagrams(root, "vi");
 const canonicalSupport = JSON.parse(await readFile(path.join(root, "content", "learning-support.json"), "utf8"));
 const viSupportOverlay = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "learning-support.json"), "utf8"));
+const canonicalSetup = JSON.parse(await readFile(path.join(root, "content", "setup.json"), "utf8"));
+const viSetup = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "setup.json"), "utf8"));
 const localeConfig = new Map(course.locales.map((locale) => [locale.code, locale]));
 const siteBase = "/pytorch-deep-learning/";
 const siteOrigin = "https://buicongnguyen.github.io";
@@ -28,7 +30,8 @@ const locales = [
     diagrams: canonicalDiagrams.diagrams,
     catalog: canonicalCatalog,
     lessons: canonicalLessons,
-    support: canonicalSupport
+    support: canonicalSupport,
+    setup: canonicalSetup
   },
   {
     ...localeConfig.get("vi"),
@@ -49,7 +52,8 @@ const locales = [
         };
       }),
       glossary: canonicalSupport.glossary.map((term, index) => ({ ...term, ...viSupportOverlay.glossary[index] }))
-    }
+    },
+    setup: viSetup
   }
 ];
 for (const locale of locales) locale.lessonByChapter = new Map(locale.lessons.map((lesson) => [lesson.chapter, lesson]));
@@ -62,12 +66,13 @@ const chapterLabel = (number) => String(number).padStart(2, "0");
 const chapterPath = (number) => `chapters/${chapterLabel(number)}/`;
 const notebookPath = (notebook) => `notebooks/${notebook.slug}/`;
 const glossaryPath = "glossary/";
+const setupPath = "setup/";
 const route = (locale, logicalPath = "") => `${siteBase}${localeConfig.get(locale)?.pathPrefix ?? `${locale}/`}${logicalPath}`;
 const absoluteUrl = (locale, logicalPath = "") => new URL(route(locale, logicalPath), siteOrigin).href;
 const localizedRuntime = (locale, value) => locale.code === "vi" && value === "PyTorch 2.12 or earlier" ? "PyTorch 2.12 trở xuống" : value;
 
 function chapterNav(locale, activeChapter) {
-  return locale.catalog.chapters.map((chapter) => `
+  return `<a class="chapter-nav-link setup-nav-link" href="${route(locale.code, setupPath)}"><span>00</span><strong>${escapeHtml(locale.setup.shortTitle)}</strong><small>${escapeHtml(locale.setup.eyebrow)}</small></a>` + locale.catalog.chapters.map((chapter) => `
     <a class="chapter-nav-link${chapter.number === activeChapter ? " active" : ""}" href="${route(locale.code, chapterPath(chapter.number))}">
       <span>${chapterLabel(chapter.number)}</span><strong>${escapeHtml(chapter.title)}</strong>${locale.lessonByChapter.has(chapter.number) ? `<small>${escapeHtml(locale.ui.course)}</small>` : ""}
     </a>`).join("");
@@ -238,7 +243,7 @@ function landingPage(locale) {
         <p class="eyebrow">${escapeHtml(ui.heroEyebrow)}</p>
         <h1>${escapeHtml(ui.heroTitleFirst)}<br><em>${escapeHtml(ui.heroTitleSecond)}</em></h1>
         <p class="hero-lede">${escapeHtml(formatMessage(ui.heroLede, { version: course.pytorchVersion }))}</p>
-        <div class="hero-actions"><a class="primary-button" href="${route(locale.code, chapterPath(1))}">${escapeHtml(ui.startLearningPath)}</a><a class="secondary-button" href="${route(locale.code, chapterPath(9))}">${escapeHtml(ui.jumpModernModels)}</a><a class="continue-button" hidden></a></div>
+        <div class="hero-actions"><a class="primary-button" href="${route(locale.code, setupPath)}">${escapeHtml(locale.setup.shortTitle)}</a><a class="secondary-button" href="${route(locale.code, chapterPath(1))}">${escapeHtml(ui.startLearningPath)}</a><a class="secondary-button" href="${route(locale.code, chapterPath(9))}">${escapeHtml(ui.jumpModernModels)}</a><a class="continue-button" hidden></a></div>
         <ul class="hero-stats">${stat(17, ui.chapters)}${stat(locale.lessons.length, ui.reviewedLessons)}${stat(810, ui.explainedCodeCells)}</ul>
       </div>
       <div class="hero-visual" aria-label="${escapeHtml(ui.pipelineLabel)}">
@@ -266,6 +271,21 @@ for chapter in atlas:
     </section>
     <section class="reference-credit"><p class="eyebrow">${escapeHtml(ui.teachingReference)}</p><h2>${escapeHtml(ui.inspiredCodeFirst)}</h2><p>${teachingDescription}</p></section>`;
   return layout(locale, { title: ui.siteName, description: ui.landingDescription, body, logicalPath: "", pageClass: "landing" });
+}
+
+function setupCommand(locale, command) {
+  return `<div class="lesson-code setup-command"><header><span>${escapeHtml(command.title)}</span><button class="lesson-copy" type="button">${escapeHtml(locale.ui.copyCode)}</button></header><pre><code class="language-${escapeHtml(command.language)}">${escapeHtml(command.source)}</code></pre></div>`;
+}
+
+function setupPage(locale) {
+  const setup = locale.setup;
+  const body = `<nav class="breadcrumbs" aria-label="${escapeHtml(locale.ui.breadcrumbLabel)}"><a href="${route(locale.code)}">${escapeHtml(locale.ui.atlas)}</a><span>/</span><b>${escapeHtml(setup.shortTitle)}</b></nav>
+    <header class="setup-hero"><p class="eyebrow">${escapeHtml(setup.eyebrow)}</p><h1>${escapeHtml(setup.title)}</h1><p>${escapeHtml(setup.summary)}</p><a class="primary-button" href="#create-environment">${escapeHtml(setup.shortTitle)}</a></header>
+    <div class="setup-layout"><aside class="setup-toc"><strong>${escapeHtml(setup.eyebrow)}</strong><nav>${setup.sections.map((section, index) => `<a href="#${escapeHtml(section.id)}"><span>${String(index + 1).padStart(2, "0")}</span>${escapeHtml(section.title)}</a>`).join("")}<a href="#setup-references"><span>↗</span>${escapeHtml(locale.ui.references)}</a></nav></aside>
+    <article class="setup-article">${setup.sections.map((section, index) => `<section id="${escapeHtml(section.id)}"><header><span>${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHtml(section.title)}</h2><p>${escapeHtml(section.summary)}</p></div></header><div class="setup-prose">${section.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div>${section.commands.map((command) => setupCommand(locale, command)).join("")}${section.download ? `<a class="setup-download" href="${siteBase}${escapeHtml(section.download.path)}" download>${escapeHtml(section.download.label)}</a>` : ""}${section.callout ? `<aside class="lesson-callout"><strong>${escapeHtml(section.callout.title)}</strong><p>${escapeHtml(section.callout.body)}</p></aside>` : ""}</section>`).join("")}
+      <section class="setup-references" id="setup-references"><div class="section-heading"><p class="eyebrow">${escapeHtml(locale.ui.referencesFurther)}</p><h2>${escapeHtml(locale.ui.continuePrimarySources)}</h2></div><ul>${setup.references.map((reference) => `<li><a href="${escapeHtml(reference.url)}"><strong>${escapeHtml(reference.title)}</strong><b>↗</b></a></li>`).join("")}</ul></section>
+      <nav class="setup-next"><a class="primary-button" href="${route(locale.code, chapterPath(1))}">${escapeHtml(locale.ui.startLearningPath)} →</a></nav></article></div>`;
+  return layout(locale, { title: setup.title, description: setup.summary, body, logicalPath: setupPath, pageClass: "setup-page" });
 }
 
 function chapterPage(locale, chapter) {
@@ -354,6 +374,9 @@ for (const locale of locales) {
   const localeRoot = path.join(dist, locale.pathPrefix);
   await mkdir(localeRoot, { recursive: true });
   await writeFile(path.join(localeRoot, "index.html"), landingPage(locale));
+  const setupDirectory = path.join(localeRoot, setupPath);
+  await mkdir(setupDirectory, { recursive: true });
+  await writeFile(path.join(setupDirectory, "index.html"), setupPage(locale));
   const glossaryDirectory = path.join(localeRoot, glossaryPath);
   await mkdir(glossaryDirectory, { recursive: true });
   await writeFile(path.join(glossaryDirectory, "index.html"), glossaryPage(locale));
@@ -368,6 +391,7 @@ for (const locale of locales) {
     await writeFile(path.join(directory, "index.html"), notebookPage(locale, notebook));
   }
   const searchEntries = [
+    { title: locale.setup.title, summary: locale.setup.summary, type: locale.setup.shortTitle, url: route(locale.code, setupPath), keywords: locale.setup.sections.map((section) => section.title).join(" ") },
     ...locale.catalog.chapters.map((chapter) => ({ title: `${formatMessage(locale.ui.chapter, { number: chapter.number })}: ${chapter.title}`, summary: chapter.summary, type: locale.ui.chapterSearchType, url: route(locale.code, chapterPath(chapter.number)) })),
     ...locale.lessons.flatMap((lesson) => lesson.sections.map((section) => ({ title: section.title, summary: section.summary, type: formatMessage(locale.ui.lessonSearchType, { number: lesson.chapter }), url: `${route(locale.code, chapterPath(lesson.chapter))}#${section.id}` }))),
     ...locale.catalog.notebooks.map((notebook) => ({ title: notebook.title, summary: notebook.summary, type: formatMessage(locale.ui.notebookSearchType, { number: notebook.chapter }), url: route(locale.code, notebookPath(notebook)), keywords: notebook.cells.flatMap((cell) => cell.concepts).join(" ") })),
@@ -382,6 +406,8 @@ for (const chapter of canonicalCatalog.chapters) {
   await writeFile(path.join(dist, "downloads", `chapter-${chapterLabel(chapter.number)}.py`), chapterRunner(chapter, lesson));
 }
 
+await writeFile(path.join(dist, "downloads", "verify-environment.py"), `"""Verify the minimum PyTorch Atlas environment."""\n\nimport torch\n\nprint("Python can import PyTorch")\nprint("PyTorch:", torch.__version__)\nprint("CUDA available:", torch.cuda.is_available())\n\nx = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)\nloss = x.square().mean()\nloss.backward()\n\nassert x.grad is not None\nassert torch.isfinite(x.grad).all()\nprint("gradient:", x.grad)\nprint("environment check: PASS")\n`);
+
 await writeFile(path.join(dist, "audit.json"), JSON.stringify({
   chapters: canonicalCatalog.chapters.length,
   reviewedLessons: canonicalLessons.length,
@@ -395,17 +421,18 @@ await writeFile(path.join(dist, "audit.json"), JSON.stringify({
   diagrams: canonicalDiagrams.diagrams.length,
   dataVisuals: canonicalDiagrams.diagrams.filter((diagram) => diagram.visual).length,
   chapterRunners: canonicalCatalog.chapters.length,
+  setupGuides: 1,
   locales: Object.fromEntries(locales.map((locale) => [locale.code, { chapters: locale.catalog.chapters.length, lessons: locale.lessons.length, notebooks: locale.catalog.notebooks.length }])),
   pytorchVersion: course.pytorchVersion,
   upstreamCommit: canonicalCatalog.upstream.commit
 }, null, 2) + "\n");
 
-const logicalRoutes = ["", glossaryPath, ...canonicalCatalog.chapters.map((chapter) => chapterPath(chapter.number)), ...canonicalCatalog.notebooks.map(notebookPath)];
+const logicalRoutes = ["", setupPath, glossaryPath, ...canonicalCatalog.chapters.map((chapter) => chapterPath(chapter.number)), ...canonicalCatalog.notebooks.map(notebookPath)];
 const sitemapRows = logicalRoutes.flatMap((logicalPath) => locales.map((locale) => `  <url><loc>${absoluteUrl(locale.code, logicalPath)}</loc><xhtml:link rel="alternate" hreflang="en" href="${absoluteUrl("en", logicalPath)}"/><xhtml:link rel="alternate" hreflang="vi" href="${absoluteUrl("vi", logicalPath)}"/><xhtml:link rel="alternate" hreflang="x-default" href="${absoluteUrl("en", logicalPath)}"/></url>`));
 await writeFile(path.join(dist, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${sitemapRows.join("\n")}\n</urlset>\n`);
 await writeFile(path.join(dist, "robots.txt"), `User-agent: *\nAllow: /\nSitemap: ${absoluteUrl("en", "sitemap.xml")}\n`);
 await writeFile(path.join(dist, "manifest.webmanifest"), JSON.stringify({ name: "PyTorch Deep Learning Atlas", short_name: "PyTorch Atlas", start_url: siteBase, scope: siteBase, display: "standalone", background_color: "#071312", theme_color: "#071312", lang: "en" }, null, 2));
-await writeFile(path.join(dist, "service-worker.js"), `const CACHE = "pytorch-atlas-v6";\nconst CORE = ["${siteBase}", "${siteBase}vi/", "${siteBase}glossary/", "${siteBase}vi/glossary/", "${siteBase}assets/styles.css?v=6", "${siteBase}assets/app.js?v=6", "${siteBase}search.json", "${siteBase}vi/search.json"];\nself.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE))));\nself.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));\nself.addEventListener("fetch", (event) => { if (event.request.method !== "GET") return; event.respondWith(fetch(event.request).then((response) => { const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put(event.request, copy)); return response; }).catch(async () => { const cached = await caches.match(event.request); if (cached) return cached; if (event.request.mode === "navigate") return caches.match("${siteBase}"); throw new Error("offline asset is not cached"); })); });\n`);
+await writeFile(path.join(dist, "service-worker.js"), `const CACHE = "pytorch-atlas-v7";\nconst CORE = ["${siteBase}", "${siteBase}vi/", "${siteBase}setup/", "${siteBase}vi/setup/", "${siteBase}glossary/", "${siteBase}vi/glossary/", "${siteBase}assets/styles.css?v=6", "${siteBase}assets/app.js?v=6", "${siteBase}search.json", "${siteBase}vi/search.json"];\nself.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE))));\nself.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));\nself.addEventListener("fetch", (event) => { if (event.request.method !== "GET") return; event.respondWith(fetch(event.request).then((response) => { const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put(event.request, copy)); return response; }).catch(async () => { const cached = await caches.match(event.request); if (cached) return cached; if (event.request.mode === "navigate") return caches.match("${siteBase}"); throw new Error("offline asset is not cached"); })); });\n`);
 const en = locales.find((locale) => locale.code === "en");
 await writeFile(path.join(dist, "404.html"), layout(en, { title: "Page not found", description: en.ui.notFoundDescription, logicalPath: "404.html", noindex: true, body: `<section class="not-found"><p class="eyebrow">${escapeHtml(en.ui.notFoundEyebrow)}</p><h1>${escapeHtml(en.ui.notFoundTitle)}</h1><p>${escapeHtml(en.ui.notFoundBody)}</p><a class="primary-button" href="${route("en")}">${escapeHtml(en.ui.backToAtlas)}</a></section>` }));
 console.log(`Built ${canonicalCatalog.chapters.length} chapters and ${canonicalCatalog.notebooks.length} notebook readers in ${locales.length} languages.`);
