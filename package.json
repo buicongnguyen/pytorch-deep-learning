@@ -6,8 +6,10 @@
   "type": "module",
   "scripts": {
     "import": "node scripts/import-catalog.mjs",
-    "build": "node scripts/check.mjs --source-only && node scripts/build.mjs && node scripts/check.mjs",
+    "build": "node scripts/check.mjs --source-only && node scripts/build.mjs && node scripts/check.mjs && node scripts/check_accessibility.mjs",
     "check": "node scripts/check.mjs",
+    "check:snippets": "python scripts/check_snippets.py --execute",
+    "check:a11y": "node scripts/check_accessibility.mjs",
     "start": "npm run build && node scripts/serve.mjs"
   },
   "engines": {

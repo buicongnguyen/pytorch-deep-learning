@@ -45,7 +45,20 @@
         { "label": "Mất mát", "detail": "so sánh dự đoán với mục tiêu" },
         { "label": "backward", "detail": "điền trường .grad của tham số" },
         { "label": "step", "detail": "cập nhật tham số" }
-      ]
+      ],
+      "visual": {"label": "Mất mát minh họa giảm qua các bước tối ưu", "items": [{"label": "bước 0", "display": "4,8"}, {"label": "bước 1", "display": "3,0"}, {"label": "bước 2", "display": "1,7"}, {"label": "bước 3", "display": "0,8"}]}
+    },
+    {
+      "chapter": 6, "section": "activation-behavior",
+      "title": "Lựa chọn activation làm thay đổi tín hiệu gradient",
+      "caption": "Các độ dốc cục bộ minh họa cho thấy chỉ nhìn giá trị forward là chưa đủ. Hãy kiểm tra cả đầu ra activation và gradient trên miền đầu vào của mô hình.",
+      "stages": [
+        {"label": "Đầu vào", "detail": "lấy mẫu giá trị âm, không và dương"},
+        {"label": "Activation", "detail": "biến đổi tín hiệu forward"},
+        {"label": "Đạo hàm", "detail": "đo tín hiệu học cục bộ"},
+        {"label": "Ảnh hưởng huấn luyện", "detail": "theo dõi bão hòa hoặc gradient bằng không"}
+      ],
+      "visual": {"label": "Độ lớn gradient activation minh họa gần các đầu vào đại diện", "items": [{"label": "ReLU âm", "display": "0,00"}, {"label": "ReLU dương", "display": "1,00"}, {"label": "tanh tại 0", "display": "1,00"}, {"label": "tanh tại ±2", "display": "0,07"}]}
     },
     {
       "chapter": 7, "section": "train-validate",
@@ -56,7 +69,8 @@
         { "label": "Phân vùng validation", "detail": "biến đổi xác định + chọn mô hình" },
         { "label": "Trạng thái tốt nhất", "detail": "checkpoint được sao chép theo validation" },
         { "label": "Tập test", "detail": "một đánh giá cuối sau khi lựa chọn" }
-      ]
+      ],
+      "visual": {"label": "Ma trận nhầm lẫn validation hai lớp minh họa", "items": [{"label": "airplane đúng", "display": "88 đúng"}, {"label": "airplane→bird", "display": "12 lỗi"}, {"label": "bird→airplane", "display": "18 lỗi"}, {"label": "bird đúng", "display": "82 đúng"}]}
     },
     {
       "chapter": 8, "section": "adaptive-classifier",
@@ -68,7 +82,8 @@
         { "label": "Adaptive pool", "detail": "N × C × 1 × 1" },
         { "label": "Flatten", "detail": "N × C" },
         { "label": "Đầu Linear", "detail": "logits N × số lớp" }
-      ]
+      ],
+      "visual": {"label": "Độ phân giải không gian minh họa qua CNN", "items": [{"label": "đầu vào", "display": "32×32"}, {"label": "khối 1", "display": "16×16"}, {"label": "khối 2", "display": "8×8"}, {"label": "pool", "display": "1×1"}]}
     },
     {
       "chapter": 9, "section": "causal-attention",
@@ -80,7 +95,8 @@
         { "label": "Causal mask", "detail": "điểm tương lai không thể đóng góp" },
         { "label": "Softmax", "detail": "trọng số attention theo hàng" },
         { "label": "Trọng số × V", "detail": "ngữ cảnh cho từng token" }
-      ]
+      ],
+      "visual": {"label": "Khả năng nhìn causal của bốn token", "items": [{"label": "q1→k1", "display": "nhìn thấy"}, {"label": "q1→tương lai", "display": "bị mask"}, {"label": "q2→quá khứ", "display": "nhìn thấy"}, {"label": "q2→tương lai", "display": "bị mask"}]}
     },
     {
       "chapter": 10, "section": "forward-process",
@@ -92,7 +108,8 @@
         { "label": "Mẫu nhiễu xₜ", "detail": "điều kiện theo timestep t" },
         { "label": "Denoiser εθ", "detail": "dự đoán mục tiêu huấn luyện" },
         { "label": "Bước đảo", "detail": "ước lượng mẫu ít nhiễu hơn" }
-      ]
+      ],
+      "visual": {"label": "Mức nhiễu minh họa theo timestep diffusion", "items": [{"label": "t=0", "display": "thấp"}, {"label": "t=25", "display": "0,28"}, {"label": "t=50", "display": "0,55"}, {"label": "t=99", "display": "cao"}]}
     },
     {
       "chapter": 11, "section": "pipeline-map",
@@ -119,6 +136,18 @@
       ]
     },
     {
+      "chapter": 14, "section": "threshold-metrics",
+      "title": "Threshold đánh đổi recall với precision",
+      "caption": "Các giá trị chỉ để minh họa, không phải kết quả thí nghiệm. Hãy quét threshold trên validation, giữ toàn bộ đường cong và khóa quy tắc lựa chọn trước test cuối.",
+      "stages": [
+        {"label": "Threshold thấp", "detail": "nhiều dự đoán dương hơn"},
+        {"label": "Recall tăng", "detail": "bỏ sót ít mẫu dương hơn"},
+        {"label": "Precision có thể giảm", "detail": "nhiều mẫu âm thành false positive"},
+        {"label": "Quy tắc validation", "detail": "chọn theo chi phí vận hành đã nêu"}
+      ],
+      "visual": {"label": "Precision và recall minh họa tại hai threshold", "items": [{"label": "precision @ .3", "display": "0,58"}, {"label": "recall @ .3", "display": "0,91"}, {"label": "precision @ .7", "display": "0,87"}, {"label": "recall @ .7", "display": "0,54"}]}
+    },
+    {
       "chapter": 15, "section": "segmentation-contract",
       "title": "Segmentation giữ nguyên hợp đồng dự đoán không gian",
       "caption": "Mô hình phát một logit cho mỗi pixel hoặc voxel đầu ra. Rank mục tiêu, quy ước kênh, kiểu nội suy và hàm mất mát phải thống nhất.",
@@ -139,7 +168,8 @@
         { "label": "Rank 1", "detail": "bản sao mô hình + shard batch 1" },
         { "label": "All-reduce", "detail": "kết hợp gradient của tham số tương ứng" },
         { "label": "Bước optimizer", "detail": "các bản sao tiếp tục đồng bộ" }
-      ]
+      ],
+      "visual": {"label": "Topology data parallel hai rank", "items": [{"label": "dữ liệu rank 0", "display": "shard A"}, {"label": "mô hình rank 0", "display": "bản sao"}, {"label": "dữ liệu rank 1", "display": "shard B"}, {"label": "mô hình rank 1", "display": "bản sao"}]}
     },
     {
       "chapter": 17, "section": "export-full-graph",
@@ -151,7 +181,8 @@
         { "label": "Artifact biên dịch / ONNX", "detail": "biểu diễn runtime đích" },
         { "label": "Bộ chuyển đổi runtime", "detail": "chuyển thiết bị + tiền xử lý" },
         { "label": "Đầu ra dịch vụ", "detail": "kết quả theo tác vụ đã kiểm tra" }
-      ]
+      ],
+      "visual": {"label": "So sánh độ trễ cold-start và warm minh họa", "items": [{"label": "eager cold", "display": "42 ms"}, {"label": "eager warm", "display": "18 ms"}, {"label": "compiled cold", "display": "100 ms"}, {"label": "compiled warm", "display": "11 ms"}]}
     }
   ]
 }

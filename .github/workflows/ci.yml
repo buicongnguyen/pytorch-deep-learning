@@ -19,5 +19,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python scripts/check_snippets.py
+      - run: python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.*" "torchvision==0.28.*"
+      - run: python scripts/check_snippets.py --execute
       - run: npm run build

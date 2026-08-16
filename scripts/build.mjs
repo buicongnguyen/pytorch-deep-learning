@@ -14,6 +14,8 @@ const viOverlays = await loadChapterOverlays(root, "vi");
 const viTerminology = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "terminology.json"), "utf8"));
 const canonicalDiagrams = await loadDiagrams(root, "en");
 const viDiagramOverlay = await loadDiagrams(root, "vi");
+const canonicalSupport = JSON.parse(await readFile(path.join(root, "content", "learning-support.json"), "utf8"));
+const viSupportOverlay = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "learning-support.json"), "utf8"));
 const localeConfig = new Map(course.locales.map((locale) => [locale.code, locale]));
 const siteBase = "/pytorch-deep-learning/";
 const siteOrigin = "https://buicongnguyen.github.io";
@@ -25,7 +27,8 @@ const locales = [
     syntax: await loadSyntax(root, "en"),
     diagrams: canonicalDiagrams.diagrams,
     catalog: canonicalCatalog,
-    lessons: canonicalLessons
+    lessons: canonicalLessons,
+    support: canonicalSupport
   },
   {
     ...localeConfig.get("vi"),
@@ -33,7 +36,20 @@ const locales = [
     syntax: await loadSyntax(root, "vi"),
     diagrams: localizeDiagrams(canonicalDiagrams, viDiagramOverlay).diagrams,
     catalog: localizeCatalog(canonicalCatalog, viOverlays, viTerminology),
-    lessons: localizeLessons(canonicalLessons, viOverlays, viTerminology)
+    lessons: localizeLessons(canonicalLessons, viOverlays, viTerminology),
+    support: {
+      tracks: canonicalSupport.tracks.map((track) => ({ ...track, ...viSupportOverlay.tracks.find((item) => item.id === track.id) })),
+      chapters: canonicalSupport.chapters.map((chapter) => {
+        const translated = viSupportOverlay.chapters.find((item) => item.chapter === chapter.chapter);
+        return {
+          ...chapter,
+          level: viSupportOverlay.levels[chapter.level],
+          prerequisites: translated.prerequisites,
+          checkpoints: chapter.checkpoints.map((checkpoint, index) => ({ ...checkpoint, ...translated.checkpoints[index] }))
+        };
+      }),
+      glossary: canonicalSupport.glossary.map((term, index) => ({ ...term, ...viSupportOverlay.glossary[index] }))
+    }
   }
 ];
 for (const locale of locales) locale.lessonByChapter = new Map(locale.lessons.map((lesson) => [lesson.chapter, lesson]));
@@ -45,6 +61,7 @@ const safeJson = (value) => JSON.stringify(value).replaceAll("<", "\\u003c");
 const chapterLabel = (number) => String(number).padStart(2, "0");
 const chapterPath = (number) => `chapters/${chapterLabel(number)}/`;
 const notebookPath = (notebook) => `notebooks/${notebook.slug}/`;
+const glossaryPath = "glossary/";
 const route = (locale, logicalPath = "") => `${siteBase}${localeConfig.get(locale)?.pathPrefix ?? `${locale}/`}${logicalPath}`;
 const absoluteUrl = (locale, logicalPath = "") => new URL(route(locale, logicalPath), siteOrigin).href;
 const localizedRuntime = (locale, value) => locale.code === "vi" && value === "PyTorch 2.12 or earlier" ? "PyTorch 2.12 trở xuống" : value;
@@ -62,7 +79,7 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
   const alternateLocale = locales.find((candidate) => candidate.code !== locale.code);
   const alternateLabel = alternateLocale.nativeLabel;
   return `<!doctype html>
-<html lang="${locale.code}" data-theme="dark" data-base="${siteBase}" data-locale="${locale.code}" data-search-url="${route(locale.code, "search.json")}">
+<html lang="${locale.code}" data-theme="dark" data-base="${siteBase}" data-locale="${locale.code}" data-locale-prefix="${escapeHtml(locale.pathPrefix)}" data-search-url="${route(locale.code, "search.json")}"${activeChapter ? ` data-chapter="${activeChapter}"` : ""}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -73,7 +90,8 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
   ${noindex ? "" : `<link rel="alternate" hreflang="en" href="${absoluteUrl("en", logicalPath)}">
   <link rel="alternate" hreflang="vi" href="${absoluteUrl("vi", logicalPath)}">
   <link rel="alternate" hreflang="x-default" href="${absoluteUrl("en", logicalPath)}">`}
-  <link rel="stylesheet" href="${siteBase}assets/styles.css?v=5">
+  <link rel="stylesheet" href="${siteBase}assets/styles.css?v=6">
+  <link rel="manifest" href="${siteBase}manifest.webmanifest">
   <title>${escapeHtml(fullTitle)}</title>
 </head>
 <body class="${pageClass}">
@@ -85,6 +103,7 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
       ${noindex ? "" : `<a class="language-switch" href="${route(alternateLocale.code, logicalPath)}" lang="${alternateLocale.code}" hreflang="${alternateLocale.code}" aria-label="${escapeHtml(formatMessage(ui.switchLanguage, { language: alternateLabel }))}"><span>${escapeHtml(alternateLabel)}</span><b>${alternateLocale.code.toUpperCase()}</b></a>`}
       <button class="search-trigger" type="button" aria-label="${escapeHtml(ui.searchAtlas)}"><span>${escapeHtml(ui.searchTrigger)}</span><kbd>/</kbd></button>
       <button class="icon-button theme-toggle" type="button" aria-label="${escapeHtml(ui.switchToLightTheme)}">◐</button>
+      <a class="glossary-link" href="${route(locale.code, glossaryPath)}">${escapeHtml(ui.glossary)}</a>
       <a class="github-link" href="https://github.com/buicongnguyen/pytorch-deep-learning">${escapeHtml(ui.github)}</a>
     </div>
   </header>
@@ -92,17 +111,18 @@ function layout(locale, { title, description, body, activeChapter = 0, logicalPa
     <aside class="sidebar" aria-label="${escapeHtml(ui.toggleChapterNavigation)}">
       <div class="sidebar-heading"><span>${escapeHtml(ui.learningPath)}</span><b>${escapeHtml(formatMessage(ui.reviewedCount, { count: locale.lessons.length }))}</b></div>
       <nav>${chapterNav(locale, activeChapter)}</nav>
+      <div class="sidebar-progress" aria-live="polite"></div>
       <div class="sidebar-source"><span>${escapeHtml(ui.sourceSnapshot)}</span><code>${locale.catalog.upstream.commit.slice(0, 9)}</code></div>
     </aside>
     <main id="main" class="main-content">${body}</main>
   </div>
   <dialog class="search-dialog" aria-label="${escapeHtml(ui.searchAtlas)}">
-    <form method="dialog" class="search-bar"><label for="site-search">${escapeHtml(ui.searchAtlas)}</label><button aria-label="${escapeHtml(ui.closeSearch)}">×</button></form>
+    <form method="dialog" class="search-bar"><label for="site-search">${escapeHtml(ui.searchAtlas)}</label><button type="submit" aria-label="${escapeHtml(ui.closeSearch)}">×</button></form>
     <input id="site-search" type="search" autocomplete="off" placeholder="${escapeHtml(ui.searchPlaceholder)}">
     <div class="search-results" aria-live="polite"></div>
   </dialog>
   <script id="runtime-i18n" type="application/json">${safeJson(ui)}</script>
-  <script type="module" src="${siteBase}assets/app.js?v=5"></script>
+  <script type="module" src="${siteBase}assets/app.js?v=6"></script>
 </body>
 </html>`;
 }
@@ -121,6 +141,11 @@ function lessonCode(locale, section) {
     if (!rule || !copy) return "";
     return `<li><div><code>${escapeHtml(copy.title)}</code><p>${escapeHtml(copy.body)}</p></div><a href="${escapeHtml(rule.url)}">${escapeHtml(locale.syntax.officialReference)}</a></li>`;
   }).join("");
+  const expected = /\bprint\s*\(/.test(code.source)
+    ? locale.ui.expectedPrinted
+    : /\bassert\b|assert_close/.test(code.source)
+      ? locale.ui.expectedAssertions
+      : locale.ui.expectedDefinitions;
   return `<div class="lesson-code">
     <header><span>${escapeHtml(code.title || locale.ui.tryIt)}</span><button class="lesson-copy" type="button">${escapeHtml(locale.ui.copyCode)}</button></header>
     <pre><code class="language-${escapeHtml(code.language || "python")}">${escapeHtml(source)}</code></pre>
@@ -128,7 +153,8 @@ function lessonCode(locale, section) {
   <aside class="syntax-guide">
     <header><span>⌘</span><div><h3>${escapeHtml(locale.syntax.heading)}</h3><p>${escapeHtml(locale.syntax.intro)}</p></div></header>
     <ul>${syntaxItems}</ul>
-  </aside>`;
+  </aside>
+  <aside class="expected-result"><strong>${escapeHtml(locale.ui.expectedResult)}</strong><p>${escapeHtml(expected)}</p></aside>`;
 }
 
 function lessonCallouts(callouts = []) {
@@ -141,9 +167,11 @@ function conceptDiagram(locale, diagram) {
   if (!diagram) return "";
   const arrow = diagram.kind === "two-way" || diagram.kind === "parallel" ? "⇄" : "→";
   const stages = diagram.stages.map((stage, index) => `${index ? `<i class="diagram-arrow" aria-hidden="true">${arrow}</i>` : ""}<div class="diagram-node"><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(stage.label)}</strong><small>${escapeHtml(stage.detail)}</small></div>`).join("");
+  const visual = diagram.visual ? `<div class="data-visual ${escapeHtml(diagram.visual.kind)}" role="img" aria-label="${escapeHtml(diagram.visual.label)}">${diagram.visual.items.map((item) => `<div style="--value:${Math.max(0, Math.min(100, Number(item.value)))}%"><span>${escapeHtml(item.label)}</span><i aria-hidden="true"></i><strong>${escapeHtml(item.display || item.value)}</strong></div>`).join("")}</div>` : "";
   return `<figure class="concept-diagram ${escapeHtml(diagram.kind)}">
     <header><p class="eyebrow">${escapeHtml(locale.ui.diagram)}</p><h3>${escapeHtml(diagram.title)}</h3></header>
     <div class="diagram-track">${stages}</div>
+    ${visual}
     ${diagram.kind === "cycle" ? `<div class="diagram-repeat" aria-hidden="true">↺ ${escapeHtml(locale.ui.repeatCycle)}</div>` : ""}
     <figcaption>${escapeHtml(diagram.caption)}</figcaption>
   </figure>`;
@@ -151,7 +179,7 @@ function conceptDiagram(locale, diagram) {
 
 function lessonSection(locale, section, index, diagram) {
   return `<section class="lesson-section" id="${escapeHtml(section.id)}">
-    <header><span>${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHtml(section.title)}</h2><p>${escapeHtml(section.summary)}</p></div></header>
+    <header><span>${String(index + 1).padStart(2, "0")}</span><div><h2>${escapeHtml(section.title)}</h2><p>${escapeHtml(section.summary)}</p></div><button class="bookmark-button" type="button" data-bookmark="${escapeHtml(section.id)}">☆ <span>${escapeHtml(locale.ui.bookmarkSection)}</span></button></header>
     <div class="lesson-prose">${section.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div>
     ${section.points?.length ? `<ul class="lesson-points">${section.points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
     ${conceptDiagram(locale, diagram)}
@@ -160,8 +188,13 @@ function lessonSection(locale, section, index, diagram) {
   </section>`;
 }
 
+function learningCheckpoint(locale, checkpoint) {
+  return `<aside class="learning-checkpoint" data-after="${escapeHtml(checkpoint.after)}"><span>✓</span><div><p class="eyebrow">${escapeHtml(locale.ui.checkpoint)}</p><h3>${escapeHtml(checkpoint.title)}</h3><p>${escapeHtml(checkpoint.action)}</p></div></aside>`;
+}
+
 function courseLesson(locale, chapter, lesson) {
   const ui = locale.ui;
+  const support = locale.support.chapters.find((item) => item.chapter === chapter.number);
   const notebookReasons = lesson.notebookLinks.map((item) => {
     const notebook = locale.catalog.notebooks.find((candidate) => candidate.slug === item.slug);
     const runtime = localizedRuntime(locale, item.runtime);
@@ -175,12 +208,15 @@ function courseLesson(locale, chapter, lesson) {
     </nav></details>
     <article class="course-article">
       <section class="learning-outcomes" id="learning-outcomes"><div><p class="eyebrow">${escapeHtml(ui.learningOutcomes)}</p><h2>${escapeHtml(ui.whatYouCanDo)}</h2></div><ol>${lesson.outcomes.map((outcome) => `<li>${escapeHtml(outcome)}</li>`).join("")}</ol></section>
-      ${lesson.sections.map((section, index) => lessonSection(locale, section, index, locale.diagrams.find((diagram) => diagram.chapter === lesson.chapter && diagram.section === section.id))).join("")}
+      ${lesson.sections.map((section, index) => {
+        const checkpoint = support.checkpoints.find((item) => item.after === section.id);
+        return lessonSection(locale, section, index, locale.diagrams.find((diagram) => diagram.chapter === lesson.chapter && diagram.section === section.id)) + (checkpoint ? learningCheckpoint(locale, checkpoint) : "");
+      }).join("")}
       <section class="version-review" id="version-review"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.bookToCurrentReview)}</p><h2>${escapeHtml(formatMessage(ui.whatChanges, { version: course.pytorchVersion }))}</h2><p>${escapeHtml(ui.currentReviewDescription)}</p></div>
         <div class="version-grid">${lesson.modern.map((item) => `<article><span>${escapeHtml(item.topic)}</span><h3>${escapeHtml(item.current)}</h3><p><strong>${escapeHtml(ui.bookContext)}</strong> ${escapeHtml(item.book)}</p><p>${escapeHtml(item.reason)}</p></article>`).join("")}</div>
       </section>
       <section class="notebook-mapping" id="guided-notebooks"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.codeAlongMap)}</p><h2>${escapeHtml(ui.useBookNotebooks)}</h2></div>${notebookReasons ? `<ul>${notebookReasons}</ul>` : `<p class="concept-note">${escapeHtml(ui.conceptChapterNote)}</p>`}</section>
-      <section class="exercise-section" id="exercises"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.exercises)}</p><h2>${escapeHtml(ui.testByChangingCode)}</h2></div><ol>${lesson.exercises.map((exercise) => `<li><h3>${escapeHtml(exercise.title)}</h3><p>${escapeHtml(exercise.prompt)}</p><small>${escapeHtml(ui.doneWhen)} ${escapeHtml(exercise.success)}</small></li>`).join("")}</ol></section>
+      <section class="exercise-section" id="exercises"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.exercises)}</p><h2>${escapeHtml(ui.testByChangingCode)}</h2></div><ol>${lesson.exercises.map((exercise, index) => `<li data-exercise="${chapter.number}-${index + 1}"><label class="exercise-check"><input type="checkbox"><span>${escapeHtml(ui.exerciseComplete)}</span></label><h3>${escapeHtml(exercise.title)}</h3><p>${escapeHtml(exercise.prompt)}</p><small>${escapeHtml(ui.doneWhen)} ${escapeHtml(exercise.success)}</small><div class="exercise-help"><details><summary>${escapeHtml(ui.exerciseHintOne)}</summary><p>${escapeHtml(ui.hintStart)}</p></details><details><summary>${escapeHtml(ui.exerciseHintTwo)}</summary><p>${escapeHtml(ui.hintVerify)}</p></details><details><summary>${escapeHtml(ui.solutionOutline)}</summary><p>${escapeHtml(ui.solutionSteps)}</p></details></div></li>`).join("")}</ol></section>
       <section class="reference-section" id="references"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.referencesFurther)}</p><h2>${escapeHtml(ui.continuePrimarySources)}</h2><p>${escapeHtml(ui.referencesDescription)}</p></div><ul>${lesson.references.map((reference) => `<li><a href="${escapeHtml(reference.url)}"><span>${escapeHtml(reference.type)}</span><strong>${escapeHtml(reference.title)}</strong><b>↗</b></a></li>`).join("")}</ul></section>
     </article>
   </div>`;
@@ -189,19 +225,20 @@ function courseLesson(locale, chapter, lesson) {
 function landingPage(locale) {
   const ui = locale.ui;
   const chapterCards = locale.catalog.chapters.map((chapter) => `
-    <a class="chapter-card" href="${route(locale.code, chapterPath(chapter.number))}">
+    <a class="chapter-card" data-chapter="${chapter.number}" href="${route(locale.code, chapterPath(chapter.number))}">
       <span class="chapter-number">${chapterLabel(chapter.number)}</span>
       <div><h3>${escapeHtml(chapter.title)}</h3><p>${escapeHtml(chapter.summary)}</p></div>
       <footer><span>${escapeHtml(formatMessage(ui.notebookCount, { count: chapter.notebookCount }))}</span><span>${escapeHtml(formatMessage(ui.codeCellCount, { count: chapter.codeCellCount }))}</span><b>${escapeHtml(ui.explore)}</b></footer>
     </a>`).join("");
   const teachingDescription = escapeHtml(ui.teachingReferenceDescription).replace("Learn PyTorch for Deep Learning", '<a href="https://www.learnpytorch.io/">Learn PyTorch for Deep Learning</a>');
+  const trackCards = locale.support.tracks.map((track) => `<details class="track-card" data-track="${escapeHtml(track.id)}"><summary><span>${escapeHtml(formatMessage(ui.trackChapters, { count: track.chapters.length }))}</span><h3>${escapeHtml(track.title)}</h3><p>${escapeHtml(track.summary)}</p></summary><ol>${track.chapters.map((number) => { const chapter = locale.catalog.chapters.find((item) => item.number === number); return `<li><a href="${route(locale.code, chapterPath(number))}"><b>${chapterLabel(number)}</b>${escapeHtml(chapter.title)}</a></li>`; }).join("")}</ol></details>`).join("");
   const body = `
     <section class="hero">
       <div class="hero-copy">
         <p class="eyebrow">${escapeHtml(ui.heroEyebrow)}</p>
         <h1>${escapeHtml(ui.heroTitleFirst)}<br><em>${escapeHtml(ui.heroTitleSecond)}</em></h1>
         <p class="hero-lede">${escapeHtml(formatMessage(ui.heroLede, { version: course.pytorchVersion }))}</p>
-        <div class="hero-actions"><a class="primary-button" href="${route(locale.code, chapterPath(1))}">${escapeHtml(ui.startLearningPath)}</a><a class="secondary-button" href="${route(locale.code, chapterPath(9))}">${escapeHtml(ui.jumpModernModels)}</a></div>
+        <div class="hero-actions"><a class="primary-button" href="${route(locale.code, chapterPath(1))}">${escapeHtml(ui.startLearningPath)}</a><a class="secondary-button" href="${route(locale.code, chapterPath(9))}">${escapeHtml(ui.jumpModernModels)}</a><a class="continue-button" hidden></a></div>
         <ul class="hero-stats">${stat(17, ui.chapters)}${stat(locale.lessons.length, ui.reviewedLessons)}${stat(810, ui.explainedCodeCells)}</ul>
       </div>
       <div class="hero-visual" aria-label="${escapeHtml(ui.pipelineLabel)}">
@@ -217,6 +254,7 @@ for chapter in atlas:
         <div class="pipeline"><span>${escapeHtml(ui.pipelineTensors)}</span><i>→</i><span>${escapeHtml(ui.pipelineModels)}</span><i>→</i><span>${escapeHtml(ui.pipelineSystems)}</span></div>
       </div>
     </section>
+    <section class="track-section" id="learning-tracks"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.learningPath)}</p><h2>${escapeHtml(ui.chooseTrack)}</h2><p>${escapeHtml(ui.trackDescription)}</p></div><div class="track-grid">${trackCards}</div></section>
     <section class="roadmap-section">
       <div class="section-heading"><p class="eyebrow">${escapeHtml(ui.roadmapEyebrow)}</p><h2>${escapeHtml(ui.roadmapTitle)}</h2><p>${escapeHtml(ui.roadmapDescription)}</p></div>
       <div class="chapter-grid">${chapterCards}</div>
@@ -234,6 +272,7 @@ function chapterPage(locale, chapter) {
   const ui = locale.ui;
   const notebooks = locale.catalog.notebooks.filter((item) => item.chapter === chapter.number);
   const lesson = locale.lessonByChapter.get(chapter.number);
+  const support = locale.support.chapters.find((item) => item.chapter === chapter.number);
   const notebookList = notebooks.length ? notebooks.map((notebook, index) => {
     const courseNote = lesson?.notebookLinks.find((item) => item.slug === notebook.slug);
     const runtime = localizedRuntime(locale, courseNote?.runtime);
@@ -250,9 +289,10 @@ function chapterPage(locale, chapter) {
   const logicalPath = chapterPath(chapter.number);
   const body = `
     <nav class="breadcrumbs" aria-label="${escapeHtml(ui.breadcrumbLabel)}"><a href="${route(locale.code)}">${escapeHtml(ui.atlas)}</a><span>/</span><b>${escapeHtml(formatMessage(ui.chapter, { number: chapter.number }))}</b></nav>
-    <header class="chapter-hero"><div class="chapter-hero-copy"><span class="chapter-kicker">${escapeHtml(formatMessage(ui.chapter, { number: chapterLabel(chapter.number) }))} · ${escapeHtml(formatMessage(ui.reviewedFor, { version: course.pytorchVersion }))}</span><h1>${escapeHtml(chapter.title)}</h1><p>${escapeHtml(chapter.summary)}</p></div>
+    <header class="chapter-hero"><div class="chapter-hero-copy"><span class="chapter-kicker">${escapeHtml(formatMessage(ui.chapter, { number: chapterLabel(chapter.number) }))} · ${escapeHtml(formatMessage(ui.reviewedFor, { version: course.pytorchVersion }))}</span><h1>${escapeHtml(chapter.title)}</h1><p>${escapeHtml(chapter.summary)}</p><div class="chapter-actions"><button class="completion-button" type="button" data-complete-chapter="${chapter.number}">○ ${escapeHtml(ui.markComplete)}</button><a href="${siteBase}downloads/chapter-${chapterLabel(chapter.number)}.py" download>${escapeHtml(ui.downloadRunner)}</a><button type="button" data-print>${escapeHtml(ui.printChapter)}</button></div></div>
       <ul class="chapter-facts">${stat(chapter.notebookCount, ui.notebooks)}${stat(chapter.codeCellCount, ui.explainedCells)}${stat(formatMessage(ui.lessonMinutes, { count: lesson.minutes }), ui.lesson)}</ul>
     </header>
+    <section class="chapter-study-plan"><div><span>${escapeHtml(ui.chapterLevel)}</span><strong>${escapeHtml(support.level)}</strong></div><div><span>${escapeHtml(ui.prerequisites)}</span><strong>${escapeHtml(support.prerequisites.join(" · "))}</strong></div><div><span>${escapeHtml(ui.timePlan)}</span><strong>${escapeHtml(formatMessage(ui.readingTime, { count: support.time[0] }))} · ${escapeHtml(formatMessage(ui.notebookTime, { count: support.time[1] }))} · ${escapeHtml(formatMessage(ui.practiceTime, { count: support.time[2] }))}</strong></div></section>
     ${courseLesson(locale, chapter, lesson)}
     <section class="chapter-content"><div class="section-heading"><p class="eyebrow">${escapeHtml(ui.completeNotebookShelf)}</p><h2>${escapeHtml(ui.allGuidedCode)}</h2><p>${escapeHtml(ui.notebookShelfDescription)}</p></div><div class="notebook-list">${notebookList}</div></section>
     <nav class="pager" aria-label="${escapeHtml(ui.toggleChapterNavigation)}">
@@ -284,8 +324,28 @@ function notebookPage(locale, notebook) {
   return layout(locale, { title: notebook.title, description: notebook.summary, body, activeChapter: notebook.chapter, logicalPath, pageClass: "notebook-page" });
 }
 
+function glossaryPage(locale) {
+  const ui = locale.ui;
+  const terms = locale.support.glossary.map((item, index) => `<article class="glossary-entry" id="term-${index + 1}" data-search="${escapeHtml([item.term, ...(item.aliases || [])].join(" "))}"><h2>${escapeHtml(item.term)}</h2><p>${escapeHtml(item.definition)}</p>${item.aliases?.length ? `<small><strong>${escapeHtml(ui.aliases)}:</strong> ${escapeHtml(item.aliases.join(", "))}</small>` : ""}${item.reference ? `<a href="${escapeHtml(item.reference)}">${escapeHtml(ui.officialReference)}</a>` : ""}</article>`).join("");
+  const body = `<nav class="breadcrumbs" aria-label="${escapeHtml(ui.breadcrumbLabel)}"><a href="${route(locale.code)}">${escapeHtml(ui.atlas)}</a><span>/</span><b>${escapeHtml(ui.glossary)}</b></nav><header class="glossary-hero"><p class="eyebrow">${escapeHtml(ui.glossary)}</p><h1>${escapeHtml(ui.glossaryTitle)}</h1><p>${escapeHtml(ui.glossaryDescription)}</p><label for="glossary-search">${escapeHtml(ui.searchAtlas)}</label><input id="glossary-search" type="search" data-glossary-search placeholder="${escapeHtml(ui.searchPlaceholder)}"></header><section class="glossary-grid">${terms}</section>`;
+  return layout(locale, { title: ui.glossary, description: ui.glossaryDescription, body, logicalPath: glossaryPath, pageClass: "glossary-page" });
+}
+
+function chapterRunner(chapter, lesson) {
+  const examples = lesson.sections.filter((section) => section.code?.language === "python");
+  const functions = examples.map((section) => {
+    const name = `example_${section.id.replaceAll("-", "_")}`;
+    const annotated = addPurposeComment(section.code.source, section.summary, "python", "Purpose");
+    const indented = annotated.split("\n").map((line) => `    ${line}`).join("\n");
+    return `def ${name}():\n    \"\"\"Chapter ${chapter.number}: ${section.title}.\"\"\"\n${indented || "    pass"}\n`;
+  }).join("\n\n");
+  const registry = examples.map((section) => `    \"${section.id}\": example_${section.id.replaceAll("-", "_")},`).join("\n");
+  return `\"\"\"Generated guided examples for Chapter ${chapter.number}: ${chapter.title}.\n\nRun one example deliberately, for example:\n    python chapter-${chapterLabel(chapter.number)}.py ${examples[0]?.id || "example"}\n\nSome examples require data, downloads, accelerators, or a distributed launch.\nRead the corresponding chapter contract before running them.\n\"\"\"\n\nfrom __future__ import annotations\n\n${functions}\n\nEXAMPLES = {\n${registry}\n}\n\nif __name__ == \"__main__\":\n    import sys\n    if len(sys.argv) != 2 or sys.argv[1] not in EXAMPLES:\n        print(\"Available examples:\")\n        print(\"\\n\".join(f\"  {name}\" for name in EXAMPLES))\n        raise SystemExit(2)\n    EXAMPLES[sys.argv[1]]()\n`;
+}
+
 await rm(dist, { recursive: true, force: true });
 await mkdir(path.join(dist, "assets"), { recursive: true });
+await mkdir(path.join(dist, "downloads"), { recursive: true });
 await cp(path.join(root, "src", "styles.css"), path.join(dist, "assets", "styles.css"));
 await cp(path.join(root, "src", "app.js"), path.join(dist, "assets", "app.js"));
 await writeFile(path.join(dist, ".nojekyll"), "");
@@ -294,6 +354,9 @@ for (const locale of locales) {
   const localeRoot = path.join(dist, locale.pathPrefix);
   await mkdir(localeRoot, { recursive: true });
   await writeFile(path.join(localeRoot, "index.html"), landingPage(locale));
+  const glossaryDirectory = path.join(localeRoot, glossaryPath);
+  await mkdir(glossaryDirectory, { recursive: true });
+  await writeFile(path.join(glossaryDirectory, "index.html"), glossaryPage(locale));
   for (const chapter of locale.catalog.chapters) {
     const directory = path.join(localeRoot, chapterPath(chapter.number));
     await mkdir(directory, { recursive: true });
@@ -307,9 +370,16 @@ for (const locale of locales) {
   const searchEntries = [
     ...locale.catalog.chapters.map((chapter) => ({ title: `${formatMessage(locale.ui.chapter, { number: chapter.number })}: ${chapter.title}`, summary: chapter.summary, type: locale.ui.chapterSearchType, url: route(locale.code, chapterPath(chapter.number)) })),
     ...locale.lessons.flatMap((lesson) => lesson.sections.map((section) => ({ title: section.title, summary: section.summary, type: formatMessage(locale.ui.lessonSearchType, { number: lesson.chapter }), url: `${route(locale.code, chapterPath(lesson.chapter))}#${section.id}` }))),
-    ...locale.catalog.notebooks.map((notebook) => ({ title: notebook.title, summary: notebook.summary, type: formatMessage(locale.ui.notebookSearchType, { number: notebook.chapter }), url: route(locale.code, notebookPath(notebook)) }))
+    ...locale.catalog.notebooks.map((notebook) => ({ title: notebook.title, summary: notebook.summary, type: formatMessage(locale.ui.notebookSearchType, { number: notebook.chapter }), url: route(locale.code, notebookPath(notebook)), keywords: notebook.cells.flatMap((cell) => cell.concepts).join(" ") })),
+    ...locale.support.glossary.map((item, index) => ({ title: item.term, summary: item.definition, type: locale.ui.glossary, url: `${route(locale.code, glossaryPath)}#term-${index + 1}`, keywords: (item.aliases || []).join(" ") })),
+    ...Object.values(locale.syntax.entries).map((item) => ({ title: item.title, summary: item.body, type: locale.syntax.heading, url: route(locale.code, glossaryPath), keywords: item.title }))
   ];
   await writeFile(path.join(localeRoot, "search.json"), JSON.stringify(searchEntries));
+}
+
+for (const chapter of canonicalCatalog.chapters) {
+  const lesson = canonicalLessons.find((item) => item.chapter === chapter.number);
+  await writeFile(path.join(dist, "downloads", `chapter-${chapterLabel(chapter.number)}.py`), chapterRunner(chapter, lesson));
 }
 
 await writeFile(path.join(dist, "audit.json"), JSON.stringify({
@@ -318,15 +388,24 @@ await writeFile(path.join(dist, "audit.json"), JSON.stringify({
   lessonSections: canonicalLessons.reduce((sum, lesson) => sum + lesson.sections.length, 0),
   notebooks: canonicalCatalog.notebooks.length,
   codeCells: canonicalCatalog.notebooks.reduce((sum, item) => sum + item.codeCellCount, 0),
+  lessonCodeBlocks: canonicalLessons.reduce((sum, lesson) => sum + lesson.sections.filter((section) => section.code).length, 0),
+  learningTracks: canonicalSupport.tracks.length,
+  learningCheckpoints: canonicalSupport.chapters.reduce((sum, item) => sum + item.checkpoints.length, 0),
+  glossaryTerms: canonicalSupport.glossary.length,
+  diagrams: canonicalDiagrams.diagrams.length,
+  dataVisuals: canonicalDiagrams.diagrams.filter((diagram) => diagram.visual).length,
+  chapterRunners: canonicalCatalog.chapters.length,
   locales: Object.fromEntries(locales.map((locale) => [locale.code, { chapters: locale.catalog.chapters.length, lessons: locale.lessons.length, notebooks: locale.catalog.notebooks.length }])),
   pytorchVersion: course.pytorchVersion,
   upstreamCommit: canonicalCatalog.upstream.commit
 }, null, 2) + "\n");
 
-const logicalRoutes = ["", ...canonicalCatalog.chapters.map((chapter) => chapterPath(chapter.number)), ...canonicalCatalog.notebooks.map(notebookPath)];
+const logicalRoutes = ["", glossaryPath, ...canonicalCatalog.chapters.map((chapter) => chapterPath(chapter.number)), ...canonicalCatalog.notebooks.map(notebookPath)];
 const sitemapRows = logicalRoutes.flatMap((logicalPath) => locales.map((locale) => `  <url><loc>${absoluteUrl(locale.code, logicalPath)}</loc><xhtml:link rel="alternate" hreflang="en" href="${absoluteUrl("en", logicalPath)}"/><xhtml:link rel="alternate" hreflang="vi" href="${absoluteUrl("vi", logicalPath)}"/><xhtml:link rel="alternate" hreflang="x-default" href="${absoluteUrl("en", logicalPath)}"/></url>`));
 await writeFile(path.join(dist, "sitemap.xml"), `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${sitemapRows.join("\n")}\n</urlset>\n`);
 await writeFile(path.join(dist, "robots.txt"), `User-agent: *\nAllow: /\nSitemap: ${absoluteUrl("en", "sitemap.xml")}\n`);
+await writeFile(path.join(dist, "manifest.webmanifest"), JSON.stringify({ name: "PyTorch Deep Learning Atlas", short_name: "PyTorch Atlas", start_url: siteBase, scope: siteBase, display: "standalone", background_color: "#071312", theme_color: "#071312", lang: "en" }, null, 2));
+await writeFile(path.join(dist, "service-worker.js"), `const CACHE = "pytorch-atlas-v6";\nconst CORE = ["${siteBase}", "${siteBase}vi/", "${siteBase}glossary/", "${siteBase}vi/glossary/", "${siteBase}assets/styles.css?v=6", "${siteBase}assets/app.js?v=6", "${siteBase}search.json", "${siteBase}vi/search.json"];\nself.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE))));\nself.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))));\nself.addEventListener("fetch", (event) => { if (event.request.method !== "GET") return; event.respondWith(fetch(event.request).then((response) => { const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put(event.request, copy)); return response; }).catch(async () => { const cached = await caches.match(event.request); if (cached) return cached; if (event.request.mode === "navigate") return caches.match("${siteBase}"); throw new Error("offline asset is not cached"); })); });\n`);
 const en = locales.find((locale) => locale.code === "en");
 await writeFile(path.join(dist, "404.html"), layout(en, { title: "Page not found", description: en.ui.notFoundDescription, logicalPath: "404.html", noindex: true, body: `<section class="not-found"><p class="eyebrow">${escapeHtml(en.ui.notFoundEyebrow)}</p><h1>${escapeHtml(en.ui.notFoundTitle)}</h1><p>${escapeHtml(en.ui.notFoundBody)}</p><a class="primary-button" href="${route("en")}">${escapeHtml(en.ui.backToAtlas)}</a></section>` }));
 console.log(`Built ${canonicalCatalog.chapters.length} chapters and ${canonicalCatalog.notebooks.length} notebook readers in ${locales.length} languages.`);

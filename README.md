@@ -5,19 +5,22 @@ repository accompanying *Deep Learning with PyTorch, Second Edition*.
 
 The Atlas provides:
 
-- a seventeen-chapter learning roadmap;
+- a seventeen-chapter roadmap plus five goal-based learning tracks;
 - original long-form lessons reviewed against PyTorch 2.13;
-- chapter tables of contents, runnable examples, update notes, and exercises;
+- chapter prerequisites, time plans, checkpoints, runnable examples,
+  expected-result guidance, update notes, and progressively guided exercises;
 - localized comments inside all 94 lesson examples, plus syntax/API guides with
   official Python and PyTorch references;
-- thirteen responsive concept diagrams for the chapters where flow, shape, or
-  system relationships benefit from a visual explanation;
+- fifteen responsive concept diagrams, including nine evidence-oriented charts
+  for gradients, metrics, shapes, attention, noise, topology, and latency;
 - a page for every upstream Jupyter notebook;
 - plain-language explanations for each code cell;
 - complete English and Vietnamese routes for all lessons and notebook readers;
 - direct links to the pinned source and Google Colab;
 - locale-aware search (including Vietnamese queries without diacritics), dark
-  mode, responsive navigation, and copyable code;
+  mode, responsive navigation, progress, bookmarks, resume, and copyable code;
+- a bilingual glossary, generated chapter Python downloads, print/PDF styling,
+  and offline retention for pages a reader has visited;
 - deterministic coverage and GitHub Pages deployment checks.
 
 English remains at the original URLs. The Vietnamese course starts at
@@ -41,14 +44,18 @@ Node.js 24 or newer is required.
 
 ```powershell
 npm run build
+npm run check:snippets
 npm start
 ```
 
-The build produces 81 logical pages in each language, two 184-record search
-indexes, reciprocal `hreflang` metadata, and one bilingual sitemap. Validation
-requires all 17 Vietnamese chapter overlays, all 810 localized notebook-cell
-explanations, all 94 code-teaching guides, and 13 bilingual diagrams before the
-site can ship.
+The build produces 82 logical pages in each language, enriched search indexes,
+17 generated chapter runners, reciprocal `hreflang` metadata, and one bilingual
+sitemap. Validation requires all 17 Vietnamese chapter overlays, all 810
+localized notebook-cell explanations, all 94 code-teaching guides, 15 bilingual
+diagrams, learning-support parity, internal-link integrity, and accessibility
+preflight checks before the site can ship. CI additionally executes local lesson
+examples under the supported CPU PyTorch stack and explicitly classifies examples
+that require downloads, repository data, compilers, accelerators, or torchrun.
 
 To refresh the catalog from a local checkout:
 

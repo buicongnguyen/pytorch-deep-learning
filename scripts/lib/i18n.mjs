@@ -109,7 +109,12 @@ export function localizeDiagrams(source, overlay) {
         ...diagram,
         title: localized.title,
         caption: localized.caption,
-        stages: diagram.stages.map((stage, index) => ({ ...stage, ...localized.stages[index] }))
+        stages: diagram.stages.map((stage, index) => ({ ...stage, ...localized.stages[index] })),
+        visual: diagram.visual ? {
+          ...diagram.visual,
+          label: localized.visual.label,
+          items: diagram.visual.items.map((item, index) => ({ ...item, label: localized.visual.items[index].label, ...(localized.visual.items[index].display ? { display: localized.visual.items[index].display } : {}) }))
+        } : undefined
       };
     })
   };

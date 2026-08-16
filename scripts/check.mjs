@@ -17,6 +17,8 @@ const enSyntax = await loadSyntax(root, "en");
 const viSyntax = await loadSyntax(root, "vi");
 const canonicalDiagrams = await loadDiagrams(root, "en");
 const viDiagrams = await loadDiagrams(root, "vi");
+const support = JSON.parse(await readFile(path.join(root, "content", "learning-support.json"), "utf8"));
+const viSupport = JSON.parse(await readFile(path.join(root, "content", "locales", "vi", "learning-support.json"), "utf8"));
 const sourceOnly = process.argv.includes("--source-only");
 const failures = [];
 const expected = { chapters: 17, reviewedLessons: 17, notebooks: 63, codeCells: 810, locales: 2 };
@@ -134,7 +136,18 @@ for (const rule of syntaxRules) {
   } catch { failures.push(`Syntax rule ${rule.key} has an invalid reference URL`); }
 }
 
-if (canonicalDiagrams.diagrams?.length !== 13) failures.push(`Expected 13 targeted concept diagrams, found ${canonicalDiagrams.diagrams?.length ?? "none"}`);
+if (canonicalDiagrams.diagrams?.length !== 15) failures.push(`Expected 15 targeted concept diagrams, found ${canonicalDiagrams.diagrams?.length ?? "none"}`);
+if (canonicalDiagrams.diagrams.filter((diagram) => diagram.visual).length !== 9) failures.push("Expected 9 evidence-oriented data visuals");
+if (support.tracks?.length !== 5) failures.push("Expected 5 goal-based learning tracks");
+if (support.chapters?.length !== 17 || JSON.stringify(support.chapters.map((item) => item.chapter)) !== JSON.stringify(Array.from({ length: 17 }, (_, index) => index + 1))) failures.push("Learning support must cover Chapters 1–17 in order");
+if (support.chapters?.some((item) => !item.level || item.time?.length !== 3 || !item.prerequisites?.length || item.checkpoints?.length !== 2)) failures.push("Every chapter needs level, prerequisites, a three-part time plan, and two checkpoints");
+if (support.glossary?.length !== 25) failures.push("Expected 25 glossary terms");
+if (viSupport.tracks?.length !== support.tracks.length || viSupport.chapters?.length !== support.chapters.length || viSupport.glossary?.length !== support.glossary.length) failures.push("Vietnamese learning support must preserve track, chapter, and glossary parity");
+for (const [index, item] of support.chapters.entries()) {
+  const lesson = lessons.find((candidate) => candidate.chapter === item.chapter);
+  for (const checkpoint of item.checkpoints) if (!lesson?.sections.some((section) => section.id === checkpoint.after)) failures.push(`Chapter ${item.chapter}: checkpoint target ${checkpoint.after} is missing`);
+  if (viSupport.chapters[index]?.chapter !== item.chapter || viSupport.chapters[index]?.checkpoints?.length !== item.checkpoints.length) failures.push(`Vietnamese Chapter ${item.chapter}: learning-support parity differs`);
+}
 requireArrayParity(canonicalDiagrams.diagrams || [], viDiagrams.diagrams || [], "Vietnamese diagrams");
 const diagramKeys = new Set();
 for (const diagram of canonicalDiagrams.diagrams || []) {
@@ -305,8 +318,27 @@ if (sourceOnly) {
   process.exit(0);
 }
 
-for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", `${localePrefix("vi")}index.html`, `${localePrefix("vi")}search.json`, "audit.json", "assets/styles.css", "assets/app.js"]) {
+for (const file of ["index.html", "404.html", ".nojekyll", "sitemap.xml", "robots.txt", "search.json", `${localePrefix("vi")}index.html`, `${localePrefix("vi")}search.json`, "audit.json", "manifest.webmanifest", "service-worker.js", "assets/styles.css", "assets/app.js"]) {
   try { await access(path.join(dist, file)); } catch { failures.push(`Missing dist/${file}`); }
+}
+try {
+  const audit = JSON.parse(await readFile(path.join(dist, "audit.json"), "utf8"));
+  const featureCounts = { lessonCodeBlocks: 94, learningTracks: 5, learningCheckpoints: 34, glossaryTerms: 25, diagrams: 15, dataVisuals: 9, chapterRunners: 17 };
+  for (const [key, value] of Object.entries(featureCounts)) if (audit[key] !== value) failures.push(`Audit expected ${key}=${value}, found ${audit[key]}`);
+} catch (error) { failures.push(`Invalid dist/audit.json: ${error.message}`); }
+try {
+  const manifest = JSON.parse(await readFile(path.join(dist, "manifest.webmanifest"), "utf8"));
+  if (manifest.start_url !== siteBase || manifest.scope !== siteBase || manifest.display !== "standalone") failures.push("Web manifest must preserve the GitHub Pages scope and standalone display");
+  const worker = await readFile(path.join(dist, "service-worker.js"), "utf8");
+  new Function(worker);
+  if (!worker.includes("event.request.mode === \"navigate\"")) failures.push("Offline fallback must be restricted to navigation requests");
+} catch (error) { failures.push(`Invalid offline application artifact: ${error.message}`); }
+for (const chapter of catalog.chapters) {
+  const runner = path.join(dist, "downloads", `chapter-${String(chapter.number).padStart(2, "0")}.py`);
+  try {
+    const source = await readFile(runner, "utf8");
+    if (!source.includes("EXAMPLES = {") || !source.includes("# Purpose:")) failures.push(`Chapter ${chapter.number}: generated runner lacks registry or purpose comments`);
+  } catch { failures.push(`Chapter ${chapter.number}: missing generated Python runner`); }
 }
 for (const locale of ["en", "vi"]) {
   const localeRoot = path.join(dist, localePrefix(locale));
@@ -322,6 +354,8 @@ for (const locale of ["en", "vi"]) {
       const lesson = lessons.find((item) => item.chapter === chapter.number);
       const expectedGuides = lesson.sections.filter((section) => section.code).length;
       if ((html.match(/class="syntax-guide"/g) || []).length !== expectedGuides) failures.push(`${locale} Chapter ${chapter.number}: expected ${expectedGuides} rendered syntax guides`);
+      if ((html.match(/class="expected-result"/g) || []).length !== expectedGuides) failures.push(`${locale} Chapter ${chapter.number}: expected ${expectedGuides} result guides`);
+      if ((html.match(/class="learning-checkpoint"/g) || []).length !== 2) failures.push(`${locale} Chapter ${chapter.number}: expected two learning checkpoints`);
       const purposeMarker = locale === "en" ? "# Purpose:" : "# Mục đích:";
       if ((html.match(new RegExp(purposeMarker, "g")) || []).length !== expectedGuides) failures.push(`${locale} Chapter ${chapter.number}: localized purpose comments are missing or incorrect`);
       const expectedDiagrams = canonicalDiagrams.diagrams.filter((diagram) => diagram.chapter === chapter.number).length;
@@ -338,16 +372,16 @@ for (const locale of ["en", "vi"]) {
     } catch { failures.push(`Missing ${locale} notebook page ${notebook.slug}`); }
   }
 }
-const expectedSearchRecords = expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0);
+const expectedSearchRecords = expected.chapters + expected.notebooks + lessons.reduce((sum, lesson) => sum + lesson.sections.length, 0) + support.glossary.length + Object.keys(enSyntax.entries).length;
 const enSearch = JSON.parse(await readFile(path.join(dist, "search.json"), "utf8"));
 const viSearch = JSON.parse(await readFile(path.join(dist, localePrefix("vi"), "search.json"), "utf8"));
 if (enSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} English search records, found ${enSearch.length}`);
 if (viSearch.length !== expectedSearchRecords) failures.push(`Expected ${expectedSearchRecords} Vietnamese search records, found ${viSearch.length}`);
 if (viSearch.some((item) => !item.url.startsWith(localizedRoute("vi")))) failures.push("Vietnamese search contains an English internal route");
 const sitemap = await readFile(path.join(dist, "sitemap.xml"), "utf8");
-if ((sitemap.match(/<url>/g) || []).length !== 162) failures.push("Sitemap must contain 81 route pairs (162 URLs)");
-if ((sitemap.match(/hreflang="vi"/g) || []).length !== 162) failures.push("Every sitemap URL needs a Vietnamese alternate");
-const logicalRoutes = ["", ...catalog.chapters.map((chapter) => `chapters/${String(chapter.number).padStart(2, "0")}/`), ...catalog.notebooks.map((notebook) => `notebooks/${notebook.slug}/`)];
+if ((sitemap.match(/<url>/g) || []).length !== 164) failures.push("Sitemap must contain 82 route pairs (164 URLs)");
+if ((sitemap.match(/hreflang="vi"/g) || []).length !== 164) failures.push("Every sitemap URL needs a Vietnamese alternate");
+const logicalRoutes = ["", "glossary/", ...catalog.chapters.map((chapter) => `chapters/${String(chapter.number).padStart(2, "0")}/`), ...catalog.notebooks.map((notebook) => `notebooks/${notebook.slug}/`)];
 const expectedSitemapLocations = logicalRoutes.flatMap((logicalPath) => [localizedUrl("en", logicalPath), localizedUrl("vi", logicalPath)]).sort();
 const actualSitemapLocations = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]).sort();
 if (JSON.stringify(actualSitemapLocations) !== JSON.stringify(expectedSitemapLocations)) failures.push("Sitemap locations do not exactly match the 81 English/Vietnamese route pairs");

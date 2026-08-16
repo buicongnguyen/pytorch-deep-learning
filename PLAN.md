@@ -50,6 +50,26 @@ system also enforces practical readability floors: 12px labels, 13px metadata,
 390px mobile, and 320px narrow-mobile layouts must remain free of page-level
 horizontal overflow.
 
+## Guided-learning and reliability expansion
+
+The Atlas now supports five goal-based routes instead of forcing every learner
+through one linear sequence. Each chapter publishes prerequisites, a three-part
+time budget, two stopping checkpoints, expected-result guidance after every
+lesson example, progressive exercise hints, and a generated Python runner.
+Local progress, exercise state, bookmarks, and the last-read section remain in
+the reader's browser; no account or telemetry is required.
+
+A 25-term bilingual glossary and enriched search cover concepts, aliases,
+notebook tags, and syntax-guide terms. Print styles support PDF output, while a
+service worker caches the application shell and pages after they are visited.
+Accessibility preflight checks generated landmarks, labels, disclosures,
+figcaptions, explicit button behavior, and duplicate IDs.
+
+CI syntax-checks all 94 lesson examples and executes every safe local example
+against the supported CPU PyTorch stack. Examples requiring downloads,
+repository data, compiler/export toolchains, accelerators, or torchrun receive
+an explicit classification instead of silently escaping the gate.
+
 ## Reviewed scope
 
 - Seventeen chapter routes, including context pages for chapters without a
@@ -73,7 +93,7 @@ inline comments where they occur.
 A deterministic syntax detector maps less-obvious Python and PyTorch constructs
 to short bilingual explanations and official documentation. The source gate
 requires all 94 code blocks to produce a valid guide and requires every rule,
-translation, comment insertion, and HTTPS reference to remain complete. Thirteen
+translation, comment insertion, and HTTPS reference to remain complete. Fifteen
 targeted concept diagrams cover relationships that prose alone makes harder to
 see: feedback loops, broadcasting, representation pipelines, data splits, CNN
 shape flow, attention, diffusion, CT provenance and geometry, segmentation,
@@ -114,9 +134,12 @@ and explanations. The site is an independent companion, not the book text.
 
 ### Runtime expectations
 
-The browser reader explains code but does not execute PyTorch. Each notebook
-page links to Colab and the original GitHub file. Local execution instructions
-keep Jupyter rooted at the upstream checkout so relative data paths work.
+The browser reader explains code but does not execute PyTorch in the page. Each
+notebook page links to Colab and the original GitHub file. Generated chapter
+runners make lesson examples downloadable, while CI executes safe local examples
+and classifies the cases that need data, downloads, compilation, accelerators,
+or multiple processes. Local notebook instructions keep Jupyter rooted at the
+upstream checkout so relative data paths work.
 
 ### Deployment
 
@@ -133,7 +156,7 @@ repository and enable Pages.
   explanations.
 - All 94 lesson examples render localized purpose comments and syntax/API
   guides; all inline teaching-comment rules are exercised.
-- Thirteen bilingual, accessible concept diagrams target valid lesson sections
+- Fifteen bilingual, accessible concept diagrams target valid lesson sections
   and preserve exact stage parity between locales.
 - Every syntax/API guide links to reachable official Python or PyTorch
   documentation.

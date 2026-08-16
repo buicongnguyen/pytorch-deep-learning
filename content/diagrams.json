@@ -53,7 +53,22 @@
         { "label": "Loss", "detail": "compare predictions with targets" },
         { "label": "backward", "detail": "populate parameter .grad" },
         { "label": "step", "detail": "update the parameters" }
-      ]
+      ],
+      "visual": {"kind": "line", "label": "Illustrative loss decreases over optimization steps", "items": [{"label": "step 0", "value": 96, "display": "4.8"}, {"label": "step 1", "value": 60, "display": "3.0"}, {"label": "step 2", "value": 34, "display": "1.7"}, {"label": "step 3", "value": 16, "display": "0.8"}]}
+    },
+    {
+      "chapter": 6,
+      "section": "activation-behavior",
+      "kind": "parallel",
+      "title": "Activation choice changes the gradient signal",
+      "caption": "These illustrative local slopes show why forward values alone are not enough. Inspect both activation outputs and gradients over the input range used by the model.",
+      "stages": [
+        {"label": "Input", "detail": "sample negative, zero, and positive values"},
+        {"label": "Activation", "detail": "transform the forward signal"},
+        {"label": "Derivative", "detail": "measure the local learning signal"},
+        {"label": "Training effect", "detail": "watch saturation or zero gradients"}
+      ],
+      "visual": {"kind": "bars", "label": "Illustrative activation gradient magnitude near representative inputs", "items": [{"label": "ReLU −", "value": 0, "display": "0.00"}, {"label": "ReLU +", "value": 100, "display": "1.00"}, {"label": "tanh 0", "value": 100, "display": "1.00"}, {"label": "tanh ±2", "value": 7, "display": "0.07"}]}
     },
     {
       "chapter": 7,
@@ -66,7 +81,8 @@
         { "label": "Validation partition", "detail": "deterministic transforms + model selection" },
         { "label": "Best state", "detail": "copied checkpoint selected by validation" },
         { "label": "Test split", "detail": "one final evaluation after selection" }
-      ]
+      ],
+      "visual": {"kind": "matrix", "label": "Example two-class validation confusion matrix", "items": [{"label": "true airplane", "value": 88, "display": "88 correct"}, {"label": "airplane→bird", "value": 12, "display": "12 errors"}, {"label": "bird→airplane", "value": 18, "display": "18 errors"}, {"label": "true bird", "value": 82, "display": "82 correct"}]}
     },
     {
       "chapter": 8,
@@ -80,7 +96,8 @@
         { "label": "Adaptive pool", "detail": "N × C × 1 × 1" },
         { "label": "Flatten", "detail": "N × C" },
         { "label": "Linear head", "detail": "N × classes logits" }
-      ]
+      ],
+      "visual": {"kind": "bars", "label": "Illustrative spatial resolution through a CNN", "items": [{"label": "input", "value": 100, "display": "32×32"}, {"label": "block 1", "value": 50, "display": "16×16"}, {"label": "block 2", "value": 25, "display": "8×8"}, {"label": "pool", "value": 6, "display": "1×1"}]}
     },
     {
       "chapter": 9,
@@ -94,7 +111,8 @@
         { "label": "Causal mask", "detail": "future scores cannot contribute" },
         { "label": "Softmax", "detail": "row-wise attention weights" },
         { "label": "Weights × V", "detail": "context for each token" }
-      ]
+      ],
+      "visual": {"kind": "matrix", "label": "Four-token causal attention visibility", "items": [{"label": "q1→k1", "value": 100, "display": "visible"}, {"label": "q1→future", "value": 0, "display": "masked"}, {"label": "q2→past", "value": 100, "display": "visible"}, {"label": "q2→future", "value": 0, "display": "masked"}]}
     },
     {
       "chapter": 10,
@@ -108,7 +126,8 @@
         { "label": "Noisy sample xₜ", "detail": "condition on timestep t" },
         { "label": "Denoiser εθ", "detail": "predict the training target" },
         { "label": "Reverse step", "detail": "estimate a less noisy sample" }
-      ]
+      ],
+      "visual": {"kind": "line", "label": "Illustrative noise level across diffusion timesteps", "items": [{"label": "t=0", "value": 5, "display": "low"}, {"label": "t=25", "value": 28, "display": "0.28"}, {"label": "t=50", "value": 55, "display": "0.55"}, {"label": "t=99", "value": 98, "display": "high"}]}
     },
     {
       "chapter": 11,
@@ -139,6 +158,20 @@
       ]
     },
     {
+      "chapter": 14,
+      "section": "threshold-metrics",
+      "kind": "two-way",
+      "title": "A threshold trades recall against precision",
+      "caption": "The values are illustrative, not a reported experiment. Sweep thresholds on validation data, retain the full curve, and lock the selection rule before final testing.",
+      "stages": [
+        {"label": "Low threshold", "detail": "more predicted positives"},
+        {"label": "Recall rises", "detail": "fewer positives are missed"},
+        {"label": "Precision may fall", "detail": "more negatives become false positives"},
+        {"label": "Validation rule", "detail": "select for the stated operating cost"}
+      ],
+      "visual": {"kind": "bars", "label": "Illustrative precision and recall at two thresholds", "items": [{"label": "precision @ .3", "value": 58, "display": "0.58"}, {"label": "recall @ .3", "value": 91, "display": "0.91"}, {"label": "precision @ .7", "value": 87, "display": "0.87"}, {"label": "recall @ .7", "value": 54, "display": "0.54"}]}
+    },
+    {
       "chapter": 15,
       "section": "segmentation-contract",
       "kind": "flow",
@@ -163,7 +196,8 @@
         { "label": "Rank 1", "detail": "model replica + batch shard 1" },
         { "label": "All-reduce", "detail": "combine matching parameter gradients" },
         { "label": "Optimizer step", "detail": "replicas remain synchronized" }
-      ]
+      ],
+      "visual": {"kind": "matrix", "label": "Two-rank data parallel topology", "items": [{"label": "rank 0 data", "value": 100, "display": "shard A"}, {"label": "rank 0 model", "value": 100, "display": "replica"}, {"label": "rank 1 data", "value": 100, "display": "shard B"}, {"label": "rank 1 model", "value": 100, "display": "replica"}]}
     },
     {
       "chapter": 17,
@@ -177,7 +211,8 @@
         { "label": "Compiled / ONNX artifact", "detail": "target runtime representation" },
         { "label": "Runtime adapter", "detail": "device transfer + preprocessing" },
         { "label": "Service output", "detail": "validated task-specific result" }
-      ]
+      ],
+      "visual": {"kind": "bars", "label": "Illustrative cold-start and warm latency comparison", "items": [{"label": "eager cold", "value": 42, "display": "42 ms"}, {"label": "eager warm", "value": 18, "display": "18 ms"}, {"label": "compiled cold", "value": 100, "display": "100 ms"}, {"label": "compiled warm", "value": 11, "display": "11 ms"}]}
     }
   ]
 }

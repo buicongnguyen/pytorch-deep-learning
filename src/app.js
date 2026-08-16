@@ -49,7 +49,7 @@ async function openSearch() {
 function renderSearch(query) {
   if (!searchIndex) return;
   const normalized = normalizeSearch(query.trim());
-  const matches = searchIndex.filter((item) => !normalized || normalizeSearch(`${item.title} ${item.summary} ${item.type}`).includes(normalized)).slice(0, 12);
+  const matches = searchIndex.filter((item) => !normalized || normalizeSearch(`${item.title} ${item.summary} ${item.type} ${item.keywords || ""}`).includes(normalized)).slice(0, 12);
   searchResults.replaceChildren(...matches.map((item) => {
     const link = document.createElement("a");
     link.href = item.url;
@@ -183,3 +183,103 @@ async function renderNotebook() {
 }
 
 renderNotebook();
+
+const progressKey = `pytorch-atlas-progress-${locale}`;
+const progress = (() => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(progressKey));
+    return stored && typeof stored === "object" ? stored : { completed: [], exercises: {}, bookmark: null, last: null };
+  }
+  catch { return { completed: [], exercises: {}, bookmark: null, last: null }; }
+})();
+if (!Array.isArray(progress.completed)) progress.completed = [];
+if (!progress.exercises || typeof progress.exercises !== "object" || Array.isArray(progress.exercises)) progress.exercises = {};
+const saveProgress = () => {
+  try { localStorage.setItem(progressKey, JSON.stringify(progress)); }
+  catch { /* Reading remains usable when storage is unavailable or full. */ }
+};
+
+function renderProgress() {
+  const count = new Set(progress.completed.map(Number)).size;
+  const summary = document.querySelector(".sidebar-progress");
+  if (summary) summary.textContent = formatMessage(ui.progressSummary, { done: count });
+  document.querySelectorAll(".chapter-card[data-chapter]").forEach((card) => card.classList.toggle("completed", progress.completed.includes(Number(card.dataset.chapter))));
+  const button = document.querySelector("[data-complete-chapter]");
+  if (button) {
+    const done = progress.completed.includes(Number(button.dataset.completeChapter));
+    button.classList.toggle("completed", done);
+    button.textContent = done ? `✓ ${ui.completed}` : `○ ${ui.markComplete}`;
+    button.setAttribute("aria-pressed", String(done));
+  }
+}
+
+document.querySelector("[data-complete-chapter]")?.addEventListener("click", (event) => {
+  const chapter = Number(event.currentTarget.dataset.completeChapter);
+  progress.completed = progress.completed.includes(chapter) ? progress.completed.filter((item) => item !== chapter) : [...progress.completed, chapter].sort((a, b) => a - b);
+  saveProgress();
+  renderProgress();
+});
+
+document.querySelectorAll("[data-exercise]").forEach((item) => {
+  const input = item.querySelector("input[type=checkbox]");
+  input.checked = Boolean(progress.exercises[item.dataset.exercise]);
+  input.addEventListener("change", () => {
+    progress.exercises[item.dataset.exercise] = input.checked;
+    saveProgress();
+  });
+});
+
+document.querySelectorAll("[data-bookmark]").forEach((button) => {
+  const section = button.dataset.bookmark;
+  const chapter = Number(root.dataset.chapter);
+  const active = progress.bookmark?.chapter === chapter && progress.bookmark?.section === section;
+  button.classList.toggle("active", active);
+  button.setAttribute("aria-pressed", String(active));
+  if (active) button.querySelector("span").textContent = ui.bookmarked;
+  button.addEventListener("click", () => {
+    const isActive = progress.bookmark?.chapter === chapter && progress.bookmark?.section === section;
+    progress.bookmark = isActive ? null : { chapter, section };
+    saveProgress();
+    document.querySelectorAll("[data-bookmark]").forEach((item) => {
+      const selected = !isActive && item === button;
+      item.classList.toggle("active", selected);
+      item.setAttribute("aria-pressed", String(selected));
+      item.querySelector("span").textContent = selected ? ui.bookmarked : ui.bookmarkSection;
+    });
+  });
+});
+
+const currentChapter = Number(root.dataset.chapter || 0);
+if (currentChapter) {
+  const sections = [...document.querySelectorAll(".lesson-section[id]")];
+  const readingObserver = new IntersectionObserver((entries) => {
+    const visible = entries.find((entry) => entry.isIntersecting);
+    if (!visible) return;
+    progress.last = { chapter: currentChapter, section: visible.target.id };
+    saveProgress();
+  }, { rootMargin: "-20% 0px -70%" });
+  sections.forEach((section) => readingObserver.observe(section));
+}
+
+const continueButton = document.querySelector(".continue-button");
+if (continueButton && Number.isInteger(progress.last?.chapter) && progress.last.chapter >= 1 && progress.last.chapter <= 17 && /^[a-z0-9-]+$/.test(progress.last?.section || "")) {
+  continueButton.hidden = false;
+  continueButton.textContent = ui.continueReading;
+  continueButton.href = `${base}${root.dataset.localePrefix || ""}chapters/${String(progress.last.chapter).padStart(2, "0")}/#${encodeURIComponent(progress.last.section)}`;
+}
+
+document.querySelector("[data-print]")?.addEventListener("click", () => window.print());
+
+const glossarySearch = document.querySelector("[data-glossary-search]");
+glossarySearch?.addEventListener("input", () => {
+  const query = normalizeSearch(glossarySearch.value);
+  document.querySelectorAll(".glossary-entry").forEach((entry) => {
+    entry.hidden = Boolean(query) && !normalizeSearch(`${entry.dataset.search} ${entry.textContent}`).includes(query);
+  });
+});
+
+renderProgress();
+
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  window.addEventListener("load", () => navigator.serviceWorker.register(`${base}service-worker.js`).catch(() => {}));
+}
